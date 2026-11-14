@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+data/raw/*
+data/processed/*
+data/recordings/*
+models/*.keras
+models/*.joblib
+.env
+models/bundle_status.json
+models/.cache/
+models/*.npz

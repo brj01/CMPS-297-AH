@@ -1,0 +1,3 @@
+# Optional legacy Keras classifier support.
+# The current airwrite_live.joblib SVM does not require this file.
+tensorflow==2.21.0
