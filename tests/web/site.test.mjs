@@ -72,7 +72,70 @@ test('calibration raises thresholds for a noisy sensor', () => {
 });
 
 test('trace unwraps yaw across ±180°', () => {
-  const pts = tracePoints([170, 179, -179, -170].map((yaw, i) => ({ t: i, acc: [0, 0, 1], gyro: [0, 0, 0], angle: [0, 0, yaw] })));
+  const { points: pts } = tracePoints([170, 179, -179, -170].map((yaw, i) => ({ t: i, acc: [0, 0, 1], gyro: [0, 0, 0], angle: [0, 0, yaw] })), { method: 'tilt' });
   const xs = pts.map((p) => p[0]);
   assert.ok(Math.abs(xs[3] + 20) < 1e-9); // 20° of continuous turn, not a 340° jump
+});
+
+// ---- movement drawing ------------------------------------------------------
+import { rotationMatrix, movementPath, projectToPage } from '../../web/js/letters.js';
+
+// Synthetic "L" written on an upright board in front of the writer: known pen
+// positions -> accelerations a real sensor would report (gravity included,
+// sensor tilted and wobbling, plus a constant accelerometer error).
+function synthLetter({ yaw = 30, bias = [0.02, -0.015, 0.01], strokes } = {}) {
+  const fs = 100, g = 9.80665;
+  const h = [Math.cos(yaw * Math.PI / 180), Math.sin(yaw * Math.PI / 180), 0];
+  const right = [h[1], -h[0], 0]; // forward x up
+  const ease = (u) => 10 * u ** 3 - 15 * u ** 4 + 6 * u ** 5; // smooth start and stop
+  const pts2 = [];
+  const still = (n) => { for (let i = 0; i < n; i++) pts2.push(pts2.length ? pts2[pts2.length - 1] : [0, 0]); };
+  still(30);
+  for (const [dx, dy, secs] of strokes) {
+    const [x0, y0] = pts2[pts2.length - 1];
+    const n = Math.round(secs * fs);
+    for (let i = 1; i <= n; i++) { const e = ease(i / n); pts2.push([x0 + dx * e, y0 + dy * e]); }
+  }
+  still(70);
+  const pos = pts2.map(([x, y]) => [0, 1, 2].map((k) => right[k] * x + (k === 2 ? y : 0)));
+  const samples = pos.map((_, i) => {
+    const a = [0, 1, 2].map((k) => {
+      const p = (j) => pos[Math.min(pos.length - 1, Math.max(0, j))][k];
+      return (p(i + 1) - 2 * p(i) + p(i - 1)) * fs * fs;
+    });
+    const angle = [4 * Math.sin(i / 13), -8 + 5 * Math.sin(i / 17), yaw + 3 * Math.sin(i / 11)];
+    const R = rotationMatrix(angle);
+    const world = [a[0] / g, a[1] / g, a[2] / g + 1];
+    const body = [0, 1, 2].map((c) => R[0][c] * world[0] + R[1][c] * world[1] + R[2][c] * world[2]).map((v, k) => v + bias[k]);
+    return { t: 100 + i / fs, acc: body, gyro: [i > 30 && i < pos.length - 70 ? 90 : 0.1, 0, 0], angle };
+  });
+  return { samples, expected: pts2.map(([x, y]) => [x, -y]) }; // page coords: y down
+}
+
+function similarity(a, b) { // shape match after centring and scaling; 1 = identical, -1 = mirrored
+  const centre = (p) => { const c = [0, 1].map((k) => p.reduce((s, q) => s + q[k], 0) / p.length); return p.map((q) => [q[0] - c[0], q[1] - c[1]]); };
+  const A = centre(a), B = centre(b);
+  const num = A.reduce((s, p, i) => s + p[0] * B[i][0] + p[1] * B[i][1], 0);
+  const na = Math.sqrt(A.reduce((s, p) => s + p[0] ** 2 + p[1] ** 2, 0)), nb = Math.sqrt(B.reduce((s, p) => s + p[0] ** 2 + p[1] ** 2, 0));
+  return num / (na * nb);
+}
+
+test('movement drawing recovers an "L" despite tilt and accelerometer error', () => {
+  const { samples, expected } = synthLetter({ strokes: [[0, -0.12, 0.6], [0.08, 0, 0.5]] });
+  const page = projectToPage(movementPath(samples), samples);
+  const s = similarity(page, expected);
+  assert.ok(s > 0.97, `similarity ${s.toFixed(3)}`);
+});
+
+test('movement drawing keeps left and right the right way round', () => {
+  const { samples, expected } = synthLetter({ yaw: -70, strokes: [[0.1, 0, 0.5], [0, -0.06, 0.4], [-0.05, 0.03, 0.4]] });
+  const page = projectToPage(movementPath(samples), samples);
+  const s = similarity(page, expected);
+  assert.ok(s > 0.95, `similarity ${s.toFixed(3)}`);
+});
+
+test('a single straight stroke (like "I") still draws as a vertical line', () => {
+  const { samples, expected } = synthLetter({ strokes: [[0, -0.12, 0.6]] });
+  const page = projectToPage(movementPath(samples), samples);
+  assert.ok(similarity(page, expected) > 0.97);
 });

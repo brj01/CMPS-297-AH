@@ -2,6 +2,7 @@ import { Sensor, gestureRow } from './sensor.js';
 import { Segmenter, State, predictLetter, tracePoints } from './letters.js';
 import { GestureMode, GESTURES, GLYPHS, LABELS, loadGestureModel } from './gestures.js';
 import { Instruments } from './instruments.js';
+import { WatchLink } from './watch.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -12,6 +13,7 @@ const pct = (x) => `${Math.round(x * 100)}%`;
 const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
 const sensor = new Sensor();
+const watch = new WatchLink();
 const segmenter = new Segmenter();
 const instruments = new Instruments({
   toggle: $('drawer-toggle'), body: $('instruments-body'), spark: $('spark'), rate: $('rate-readout'),
@@ -121,7 +123,7 @@ const trace = {
   canvas: $('trace'),
   paper: $('paper'),
   samples: [],
-  options: store.get('airwrite.trace', { swap: false, flipX: false, flipY: false }),
+  options: { method: 'movement', swap: false, flipX: false, flipY: false, ...store.get('airwrite.trace', {}) },
   resize() { this.draw(this.samples, this.final); },
   draw(samples, final = false) {
     this.samples = samples;
@@ -136,12 +138,12 @@ const trace = {
     this.paper.dataset.hasTrace = String(samples.length > 1);
     if (samples.length < 2) return;
 
-    const pts = tracePoints(samples, this.options);
+    const { points: pts, minSpan } = tracePoints(samples, { ...this.options, still: segmenter.stop });
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
     const left = 64 * dpr, pad = 36 * dpr;
     const w = c.width - left - pad, h = c.height - 2 * pad;
-    const span = Math.max(maxX - minX, maxY - minY, 25); // degrees; keeps tiny jitter from filling the page
+    const span = Math.max(maxX - minX, maxY - minY, minSpan); // keeps tiny jitter from filling the page
     const scale = Math.min(w, h) / span;
     const ox = left + (w - (maxX - minX) * scale) / 2 - minX * scale;
     const oy = pad + (h - (maxY - minY) * scale) / 2 - minY * scale;
@@ -171,6 +173,10 @@ const opts = { swap: $('opt-swap'), flipX: $('opt-flipx'), flipY: $('opt-flipy')
 Object.entries(opts).forEach(([key, input]) => {
   input.checked = !!trace.options[key];
   input.addEventListener('change', () => { trace.options[key] = input.checked; store.set('airwrite.trace', trace.options); trace.resize(); });
+});
+document.querySelectorAll('input[name="trace-method"]').forEach((radio) => {
+  radio.checked = radio.value === trace.options.method;
+  radio.addEventListener('change', () => { trace.options.method = radio.value; store.set('airwrite.trace', trace.options); trace.resize(); });
 });
 $('open-settings').addEventListener('click', () => settings.showModal());
 
@@ -226,9 +232,10 @@ function showLetter(result) {
   el.style.opacity = result.accepted ? '1' : '0.45';
   el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
   const score = Number(result.confidence || 0).toFixed(2);
+  const using = result.used_watch ? ' · pen + watch' : '';
   $('letter-meta').innerHTML = result.accepted
-    ? `Match score <b>${score}</b>`
-    : `Low match score <b>${score}</b>, so it wasn’t added`;
+    ? `Match score <b>${score}</b>${using}`
+    : `Low match score <b>${score}</b>, so it wasn’t added${using}`;
   const alts = (result.top3 || []).slice(1).map((t) => t.letter).filter(Boolean);
   $('letter-alts').hidden = !alts.length;
   $('letter-alts-list').replaceChildren(...alts.map((l) => Object.assign(document.createElement('span'), { textContent: l })));
@@ -244,7 +251,7 @@ async function readLetter(samples) {
   reading = true;
   setStatus('letters', 'reading', 'Reading your letter…');
   try {
-    const result = await predictLetter(samples);
+    const result = await predictLetter(samples, { watchCode: watch.code });
     showLetter(result);
     if (result.accepted && result.letter) { text += result.letter; renderText(); }
     reading = false;
@@ -315,6 +322,54 @@ async function checkHealth() {
   if (lettersHealth.state === 'loading') setTimeout(checkHealth, 4000);
 }
 checkHealth();
+
+/* ------------------------------------------------------------ apple watch */
+
+const watchDialog = $('watch-dialog');
+
+function renderWatch() {
+  const chip = $('watch');
+  const st = watch.status;
+  chip.dataset.state = watch.state;
+  $('watch-status').dataset.state = watch.state === 'receiving' ? 'receiving' : (watch.state === 'nomotion' || watch.state === 'expired') ? 'nomotion' : 'waiting';
+  const detail = {
+    off: 'Not paired',
+    pairing: 'Getting a code…',
+    waiting: `Code ${watch.code} · waiting`,
+    receiving: `${st ? st.rate_hz.toFixed(0) : '?'} Hz · used for letters`,
+    nomotion: 'Data has no motion values',
+    expired: 'Pairing expired',
+  }[watch.state];
+  $('watch-detail').textContent = detail;
+  $('watch-pair').textContent = watch.code ? 'Details' : 'Pair';
+  $('watch-pair').disabled = watch.state === 'pairing';
+  $('watch-url').textContent = watch.url;
+  $('watch-status-text').textContent = {
+    waiting: st && st.samples > 0 ? 'Data stopped arriving. Is SensorLog still streaming?' : 'Waiting for the first data…',
+    receiving: `Receiving ${st ? st.rate_hz.toFixed(0) : ''} samples a second. Letters now use the pen and the watch.`,
+    nomotion: 'Data is arriving, but it has no motion values the app recognises. Check SensorLog is sending the watch’s accelerometer, gyroscope and orientation.',
+    expired: 'This pairing expired. Pair again to get a new address.',
+    pairing: 'Getting a code…', off: '',
+  }[watch.state];
+  $('watch-unpair').hidden = !watch.code;
+}
+watch.addEventListener('change', renderWatch);
+
+$('watch-pair').addEventListener('click', async () => {
+  $('watch-local').hidden = !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+  if (!watch.code) {
+    try { await watch.pair(); } catch (err) { setStatus('letters', 'error', `${err.message}.`); return; }
+  }
+  renderWatch();
+  watchDialog.showModal();
+});
+$('watch-unpair').addEventListener('click', () => { watch.unpair(); watchDialog.close(); });
+$('watch-copy').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  try { await navigator.clipboard.writeText(watch.url); btn.textContent = 'Copied'; } catch { btn.textContent = 'Select it'; }
+  setTimeout(() => { btn.textContent = 'Copy'; }, 1400);
+});
+renderWatch();
 
 /* --------------------------------------------------------------- gestures */
 

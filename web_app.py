@@ -13,7 +13,7 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -21,15 +21,18 @@ from pydantic import BaseModel, Field, field_validator
 from config import AUTO_DOWNLOAD, CONFIDENCE_THRESHOLD, HF_REPO, HF_REVISION, MODEL_DIR
 from recognition.classifier import Classifier
 from recognition.model_downloader import ModelDownloader
+from web_watch import WatchHub
 
 ROOT = Path(__file__).parent
 WEB_DIR = ROOT / "web"
 GESTURE_FILES = {"core.js": "text/javascript", "model.json": "application/json"}
 MAX_SAMPLES = 2000  # 20 s at 100 Hz; a letter is capped at 5 s by the detector
+MAX_WATCH_BATCH = 500
 
 logger = logging.getLogger("airwrite.web")
 classifier = Classifier(MODEL_DIR)
 letters_status: dict = {"state": "loading", "detail": ""}
+watch_hub = WatchHub()
 
 
 def load_letters_model() -> None:
@@ -78,6 +81,7 @@ class Sample(BaseModel):
 
 class LetterRequest(BaseModel):
     samples: list[Sample] = Field(min_length=2, max_length=MAX_SAMPLES)
+    watch_code: str | None = Field(default=None, max_length=16)
 
 
 @app.get("/api/health")
@@ -93,15 +97,69 @@ async def predict_letter(req: LetterRequest):
         {"timestamp": s.t, "acc": tuple(s.acc), "gyro": tuple(s.gyro), "orientation": tuple(s.orientation)}
         for s in req.samples
     ]
+    sensors = {"pen": samples}
+    if req.watch_code:
+        try:
+            watch = watch_hub.window(req.watch_code, samples[0]["timestamp"], samples[-1]["timestamp"])
+        except KeyError:
+            watch = []
+        if len(watch) >= 2:
+            sensors["watch"] = watch
     try:
-        result = await asyncio.to_thread(classifier.predict_samples, {"pen": samples}, CONFIDENCE_THRESHOLD, "pen")
+        result = await asyncio.to_thread(classifier.predict_samples, sensors, CONFIDENCE_THRESHOLD, "auto")
     except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
+        if "watch" not in sensors:
+            raise HTTPException(422, str(exc)) from exc
+        # Bad watch data shouldn't cost the letter: fall back to the pen alone.
+        logger.warning("Watch data unusable for this letter (%s); using the pen only", exc)
+        sensors.pop("watch")
+        try:
+            result = await asyncio.to_thread(classifier.predict_samples, sensors, CONFIDENCE_THRESHOLD, "pen")
+        except ValueError as exc2:
+            raise HTTPException(422, str(exc2)) from exc2
     return {
         "letter": result["letter"], "accepted": result["accepted"], "confidence": result["confidence"],
         "top3": [{"letter": t["letter"], "score": t["score"]} for t in result["top3"]],
-        "latency_ms": result["latency_ms"],
+        "latency_ms": result["latency_ms"], "used_watch": "watch" in sensors,
     }
+
+
+# ---- Apple Watch (SensorLog) pairing -------------------------------------------------
+
+@app.post("/api/watch/pair")
+async def watch_pair():
+    return {"code": watch_hub.create()}
+
+
+@app.post("/api/watch/{code}")
+async def watch_receive(code: str, request: Request):
+    try:
+        payload = await request.json()
+    except ValueError as exc:
+        raise HTTPException(400, "Body must be JSON") from exc
+    if isinstance(payload, dict) and isinstance(payload.get("data"), (dict, list)):
+        payload = payload["data"]  # {"data": ...} wrapper, as the desktop app accepted
+    payloads = payload if isinstance(payload, list) else [payload]
+    if not payloads or len(payloads) > MAX_WATCH_BATCH or not all(isinstance(p, dict) for p in payloads):
+        raise HTTPException(422, f"Send a JSON object or a list of up to {MAX_WATCH_BATCH} objects")
+    try:
+        return {"received": watch_hub.add(code, payloads)}
+    except KeyError as exc:
+        raise HTTPException(404, "Unknown or expired pairing code") from exc
+
+
+@app.get("/api/watch/{code}/status")
+async def watch_status(code: str):
+    try:
+        return watch_hub.status(code)
+    except KeyError as exc:
+        raise HTTPException(404, "Unknown or expired pairing code") from exc
+
+
+@app.delete("/api/watch/{code}")
+async def watch_unpair(code: str):
+    watch_hub.remove(code)
+    return {"removed": True}
 
 
 # Only the two gesture files the page needs; not the training data or the old demo.

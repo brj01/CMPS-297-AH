@@ -21,6 +21,7 @@
       <svg class="wordmark-swash" viewBox="0 0 120 14" aria-hidden="true"><path d="M2 9 C 28 2, 52 13, 76 6 S 108 4, 118 8"/></svg>
     </a>
 
+    <div class="devices">
     <div class="sensor" id="sensor" data-state="idle">
       <span class="sensor-dot" aria-hidden="true"></span>
       <span class="sensor-text">
@@ -28,6 +29,16 @@
         <small id="sensor-detail">Not connected</small>
       </span>
       <button class="btn btn-solid" id="connect" type="button">Connect sensor</button>
+    </div>
+
+    <div class="sensor watch" id="watch" data-state="off">
+      <svg class="watch-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="3.5"/><path d="M9 6l.6-3h4.8l.6 3M9 18l.6 3h4.8l.6-3"/></svg>
+      <span class="sensor-text">
+        <strong>Apple Watch <span class="optional">optional</span></strong>
+        <small id="watch-detail">Not paired</small>
+      </span>
+      <button class="btn" id="watch-pair" type="button">Pair</button>
+    </div>
     </div>
   </header>
 
@@ -160,13 +171,41 @@
     <p>Gestures are recognised entirely in your browser. For letters, only the motion of each finished letter is sent to the server.</p>
   </footer>
 
+  <dialog class="settings" id="watch-dialog" aria-labelledby="watch-title">
+    <form method="dialog">
+      <h2 id="watch-title">Pair an Apple Watch</h2>
+      <p>Adds wrist motion to letter recognition (gestures use the pen only). The watch sends its data through the <b>SensorLog</b> app on your iPhone.</p>
+      <ol class="steps">
+        <li>In SensorLog, choose to include the Apple Watch’s motion sensors.</li>
+        <li>Set it to stream over HTTP, as JSON, to this address:
+          <span class="pair-url"><code id="watch-url"></code><button class="btn" id="watch-copy" type="button">Copy</button></span>
+        </li>
+        <li>Start streaming, then keep this page open while you write.</li>
+      </ol>
+      <p class="pair-local" id="watch-local" hidden>You’re on <b>localhost</b>, which your phone can’t reach. Use the hosted site, or open this page through your computer’s network address.</p>
+      <p class="pair-status" id="watch-status" data-state="waiting"><span class="status-mark" aria-hidden="true"></span><span id="watch-status-text">Waiting for the first data…</span></p>
+      <div class="settings-actions">
+        <button class="btn btn-ghost" id="watch-unpair" type="button">Unpair</button>
+        <button class="btn btn-solid" value="done">Done</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog class="settings" id="settings" aria-labelledby="settings-title">
     <form method="dialog">
       <h2 id="settings-title">Trace settings</h2>
-      <p>The trace is drawn from how the sensor turns, so it depends on how it’s worn. If your letters come out sideways or mirrored, adjust them here. This only changes the drawing, not recognition.</p>
+      <p>This only changes the drawing on the page, not which letter is recognised.</p>
+      <fieldset class="choice">
+        <legend>Draw from</legend>
+        <label class="check"><input type="radio" name="trace-method" value="movement"> <span><b>Pen movement</b><small>Where the pen actually went, worked out from its acceleration. Hold still before and after each letter.</small></span></label>
+        <label class="check"><input type="radio" name="trace-method" value="tilt"> <span><b>Pen tilt</b><small>How the pen turned. Steadier, but ignores sideways movement.</small></span></label>
+      </fieldset>
+      <fieldset class="choice">
+        <legend>If letters come out sideways or mirrored</legend>
       <label class="check"><input type="checkbox" id="opt-swap"> Swap horizontal and vertical</label>
       <label class="check"><input type="checkbox" id="opt-flipx"> Mirror left–right</label>
       <label class="check"><input type="checkbox" id="opt-flipy"> Flip upside down</label>
+      </fieldset>
       <div class="settings-actions"><button class="btn btn-solid" value="done">Done</button></div>
     </form>
   </dialog>

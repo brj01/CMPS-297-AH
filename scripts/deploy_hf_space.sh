@@ -11,7 +11,9 @@ BUILD="$(mktemp -d)"
 trap 'rm -rf "$BUILD"' EXIT
 
 # Only what the website needs: no training data, recordings, models or secrets.
-cp "$ROOT"/{Dockerfile,.dockerignore,requirements-web.txt,config.py,web_app.py} "$BUILD"/
+cp "$ROOT"/{Dockerfile,.dockerignore,requirements-web.txt,config.py,web_app.py,web_watch.py} "$BUILD"/
+mkdir -p "$BUILD/sensors"
+cp "$ROOT"/sensors/{__init__.py,apple_watch.py} "$BUILD/sensors/"
 cp -r "$ROOT"/{processing,recognition,web} "$BUILD"/
 mkdir -p "$BUILD/gestures"
 cp "$ROOT"/gestures/{core.js,model.json} "$BUILD/gestures/"

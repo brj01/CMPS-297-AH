@@ -14,7 +14,8 @@ WORKDIR /home/user/app
 COPY requirements-web.txt .
 RUN pip install --no-cache-dir -r requirements-web.txt
 
-COPY --chown=user config.py web_app.py ./
+COPY --chown=user config.py web_app.py web_watch.py ./
+COPY --chown=user sensors/__init__.py sensors/apple_watch.py sensors/
 COPY --chown=user processing processing
 COPY --chown=user recognition recognition
 COPY --chown=user gestures/core.js gestures/model.json gestures/
