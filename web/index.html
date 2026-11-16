@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AirWrite</title>
+  <meta name="description" content="Write letters and draw gestures in the air with a WitMotion motion sensor.">
+  <meta name="theme-color" content="#fbf5f3">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23f6c4d6'/%3E%3Cpath d='M8 22c3-9 6-13 8-13s1 9 3 9 3-5 5-7' fill='none' stroke='%235b2f8c' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,300..700,0..100,0..1;1,9..144,300..700,0..100,0..1&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/css/site.css">
+  <script src="/gestures/core.js" defer></script>
+  <script type="module" src="/js/app.js"></script>
+</head>
+<body>
+  <header class="masthead">
+    <a class="wordmark" href="/" aria-label="AirWrite home">
+      <span class="wordmark-air">air</span><span class="wordmark-write">write</span>
+      <svg class="wordmark-swash" viewBox="0 0 120 14" aria-hidden="true"><path d="M2 9 C 28 2, 52 13, 76 6 S 108 4, 118 8"/></svg>
+    </a>
+
+    <div class="sensor" id="sensor" data-state="idle">
+      <span class="sensor-dot" aria-hidden="true"></span>
+      <span class="sensor-text">
+        <strong id="sensor-name">No sensor</strong>
+        <small id="sensor-detail">Not connected</small>
+      </span>
+      <button class="btn btn-solid" id="connect" type="button">Connect sensor</button>
+    </div>
+  </header>
+
+  <p class="notice" id="unsupported" hidden>
+    This browser can’t talk to Bluetooth devices. Open AirWrite in <b>Chrome</b> or <b>Edge</b> on a computer or an Android phone.
+    You can still try gestures with the sample recording.
+  </p>
+
+  <main class="desk">
+    <div class="tabs" role="tablist" aria-label="Mode">
+      <button class="tab" role="tab" id="tab-letters" aria-controls="panel-letters" aria-selected="true" type="button">
+        Letters <span class="tab-hint">A – Z</span>
+      </button>
+      <button class="tab" role="tab" id="tab-gestures" aria-controls="panel-gestures" aria-selected="false" tabindex="-1" type="button">
+        Gestures <span class="tab-hint">swipes &amp; circles</span>
+      </button>
+    </div>
+
+    <!-- Letters -->
+    <section class="sheet" id="panel-letters" role="tabpanel" aria-labelledby="tab-letters">
+      <div class="letters">
+        <div class="paper" id="paper">
+          <canvas id="trace" aria-label="The shape you wrote in the air"></canvas>
+          <p class="paper-hint" id="paper-hint">Write one capital letter in the air,<br>then hold still for a moment.</p>
+        </div>
+
+        <div class="verdict" aria-live="polite">
+          <span class="eyebrow">You wrote</span>
+          <div class="big-letter" id="letter" data-empty="true">a</div>
+          <p class="verdict-meta" id="letter-meta">Nothing yet</p>
+          <div class="alts" id="letter-alts" hidden>
+            <span class="alts-label">or maybe</span>
+            <span class="alts-list" id="letter-alts-list"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="statusline" id="letters-status" data-state="idle">
+        <span class="status-mark" aria-hidden="true"></span>
+        <span class="status-text" id="letters-status-text" role="status">Connect your sensor to start.</span>
+        <span class="status-actions">
+          <button class="btn btn-ghost" id="calibrate" type="button" title="Measures how much the sensor jitters at rest, so tiny movements aren’t mistaken for writing">Calibrate</button>
+          <button class="btn btn-ghost" id="listen-toggle" type="button" aria-pressed="false">Pause</button>
+          <button class="btn btn-ghost btn-icon" id="open-settings" type="button" aria-label="Trace settings" title="Trace settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+          </button>
+        </span>
+      </div>
+
+      <div class="composer">
+        <span class="eyebrow">Your text</span>
+        <div class="composed" id="composed" aria-live="polite">
+          <span id="composed-text"></span><span class="caret" aria-hidden="true"></span>
+          <span class="composed-placeholder" id="composed-placeholder">Recognised letters land here.</span>
+        </div>
+        <div class="composer-actions">
+          <button class="btn" id="add-space" type="button">Space <kbd>␣</kbd></button>
+          <button class="btn" id="backspace" type="button">Delete <kbd>⌫</kbd></button>
+          <button class="btn" id="copy" type="button">Copy</button>
+          <button class="btn btn-ghost" id="clear" type="button">Clear</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Gestures -->
+    <section class="sheet" id="panel-gestures" role="tabpanel" aria-labelledby="tab-gestures" hidden>
+      <div class="gestures">
+        <div class="stage" id="stage" data-kind="idle">
+          <svg class="glyph" viewBox="0 0 120 120" aria-hidden="true">
+            <path class="glyph-blob" d="M60 8c22 0 44 12 50 34 7 24-4 52-28 64-21 10-50 6-63-14C6 72 4 44 18 26 28 14 43 8 60 8z"/>
+            <path class="glyph-path" id="glyph-path" pathLength="1" d=""/>
+          </svg>
+          <div class="stage-text" aria-live="polite">
+            <div class="gesture-name" id="gesture-name">Ready when you are</div>
+            <p class="verdict-meta" id="gesture-meta">Make one quick swipe or circle.</p>
+          </div>
+        </div>
+
+        <div class="odds">
+          <span class="eyebrow">How sure it is</span>
+          <ul class="odds-list" id="odds"></ul>
+        </div>
+      </div>
+
+      <div class="statusline" id="gestures-status" data-state="idle">
+        <span class="status-mark" aria-hidden="true"></span>
+        <span class="status-text" id="gestures-status-text" role="status">Connect your sensor, or play the sample recording.</span>
+        <span class="status-actions">
+          <button class="btn btn-ghost" id="demo" type="button">Play sample gestures</button>
+        </span>
+      </div>
+
+      <div class="history">
+        <span class="eyebrow">Recent</span>
+        <ol class="history-list" id="gesture-history"><li class="history-empty">Nothing yet</li></ol>
+      </div>
+    </section>
+
+    <!-- Instruments -->
+    <section class="instruments" id="instruments">
+      <button class="drawer-toggle" id="drawer-toggle" type="button" aria-expanded="false" aria-controls="instruments-body">
+        <span class="drawer-title">Instruments</span>
+        <canvas class="spark" id="spark" aria-hidden="true"></canvas>
+        <span class="drawer-rate" id="rate-readout">— Hz</span>
+        <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="instruments-body" id="instruments-body" hidden>
+        <figure class="chart">
+          <figcaption>Acceleration <span class="unit">g</span><span class="legend"><i class="c1"></i>x<i class="c2"></i>y<i class="c3"></i>z</span></figcaption>
+          <canvas id="chart-acc"></canvas>
+        </figure>
+        <figure class="chart">
+          <figcaption>Rotation speed <span class="unit">°/s</span><span class="legend"><i class="c1"></i>x<i class="c2"></i>y<i class="c3"></i>z</span></figcaption>
+          <canvas id="chart-gyro"></canvas>
+        </figure>
+        <dl class="readouts">
+          <div><dt>Roll</dt><dd id="ro-roll">—</dd></div>
+          <div><dt>Pitch</dt><dd id="ro-pitch">—</dd></div>
+          <div><dt>Yaw</dt><dd id="ro-yaw">—</dd></div>
+          <div><dt>Rate</dt><dd id="ro-rate">—</dd></div>
+          <div><dt>Samples</dt><dd id="ro-count">0</dd></div>
+          <div><dt>Movement</dt><dd id="ro-motion">—</dd></div>
+        </dl>
+      </div>
+    </section>
+  </main>
+
+  <footer class="colophon">
+    <p>Works in Chrome and Edge, on a computer or an Android phone. Close the WitMotion app first, since the sensor only talks to one program at a time.</p>
+    <p>Gestures are recognised entirely in your browser. For letters, only the motion of each finished letter is sent to the server.</p>
+  </footer>
+
+  <dialog class="settings" id="settings" aria-labelledby="settings-title">
+    <form method="dialog">
+      <h2 id="settings-title">Trace settings</h2>
+      <p>The trace is drawn from how the sensor turns, so it depends on how it’s worn. If your letters come out sideways or mirrored, adjust them here. This only changes the drawing, not recognition.</p>
+      <label class="check"><input type="checkbox" id="opt-swap"> Swap horizontal and vertical</label>
+      <label class="check"><input type="checkbox" id="opt-flipx"> Mirror left–right</label>
+      <label class="check"><input type="checkbox" id="opt-flipy"> Flip upside down</label>
+      <div class="settings-actions"><button class="btn btn-solid" value="done">Done</button></div>
+    </form>
+  </dialog>
+</body>
+</html>

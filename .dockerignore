@@ -1,0 +1,10 @@
+.git
+.venv
+.env
+**/__pycache__
+data
+models
+tests
+training
+gestures/all_training_windows.npz
+gestures/gesture_demo.html

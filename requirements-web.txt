@@ -1,0 +1,12 @@
+# Server for the hosted website (web_app.py). No Bluetooth libraries needed:
+# the browser connects to the sensor.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+numpy>=1.26
+scipy>=1.12
+pydantic>=2.6
+huggingface_hub>=0.25
+python-dotenv>=1.0
+joblib>=1.4
+# The letters model was saved with scikit-learn 1.6.1; other versions warn and may differ.
+scikit-learn==1.6.1
