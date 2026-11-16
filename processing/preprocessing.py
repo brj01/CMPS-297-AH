@@ -60,8 +60,18 @@ def select_active_segment(samples: list[dict], gap_seconds: float = 0.65) -> lis
     end = np.searchsorted(timestamps, timestamps[strongest[1]] + pad, side="right")
     return samples[begin:end]
 
+def _strictly_increasing(samples: list[dict]) -> list[dict]:
+    """Drop samples whose timestamp does not move forward (e.g. duplicates)."""
+    kept: list[dict] = []
+    for sample in sorted(samples, key=lambda s: s["timestamp"]):
+        if not kept or sample["timestamp"] > kept[-1]["timestamp"]:
+            kept.append(sample)
+    return kept
+
 def build_svm_inputs(samples: list[dict], sample_steps: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    selected = select_active_segment(samples)
+    selected = _strictly_increasing(select_active_segment(samples))
+    if len(selected) < 2:
+        raise ValueError("A letter needs at least two sensor samples with distinct timestamps")
     timestamps = np.asarray([s["timestamp"] for s in selected], dtype=np.float64)
     motion = np.asarray([[*s["acc"], *s["gyro"]] for s in selected], dtype=np.float32)
     raw6 = _interpolate(motion, timestamps, 155)

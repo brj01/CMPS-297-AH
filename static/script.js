@@ -131,6 +131,10 @@ ws.onmessage = event => {
   }
   if (message.type === "prediction") {
     const prediction = message.data;
+    if (prediction.status === "error") {
+      $("#error").textContent = `Couldn't classify that letter: ${prediction.error}. Try writing it again.`;
+      return;
+    }
     $("#letter").textContent = prediction.letter || `class ${prediction.class_id}`;
     const historyEl = $("#prediction-history");
     const empty = historyEl.querySelector(".empty"); if (empty) empty.remove();

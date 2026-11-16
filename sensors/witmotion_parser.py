@@ -26,12 +26,24 @@ def parse_packet(packet: bytes, timestamp: float = 0.0) -> ImuReading | None:
     )
 
 class PacketStream:
-    def __init__(self) -> None:
+    """Reassembles packets from BLE notifications.
+
+    One notification often carries several packets, but they all arrive with a
+    single receive time. Each packet gets its own timestamp, spaced
+    ``sample_period`` apart and ending at the receive time, so timestamps are
+    always strictly increasing (later processing steps require that).
+    """
+
+    MIN_GAP = 1e-3
+
+    def __init__(self, sample_period: float = 0.01) -> None:
         self.buffer = bytearray()
+        self.sample_period = sample_period
+        self.last_timestamp: float | None = None
 
     def feed(self, data: bytes, timestamp: float = 0.0) -> list[ImuReading]:
         self.buffer.extend(data)
-        readings: list[ImuReading] = []
+        packets: list[bytes] = []
         while True:
             start = self.buffer.find(b"\x55\x61")
             if start < 0:
@@ -41,10 +53,16 @@ class PacketStream:
                 del self.buffer[:start]
             if len(self.buffer) < PACKET_LENGTH:
                 break
-            packet = bytes(self.buffer[:PACKET_LENGTH])
+            packets.append(bytes(self.buffer[:PACKET_LENGTH]))
             del self.buffer[:PACKET_LENGTH]
-            parsed = parse_packet(packet, timestamp)
+        readings: list[ImuReading] = []
+        for index, packet in enumerate(packets):
+            packet_time = timestamp - (len(packets) - 1 - index) * self.sample_period
+            if self.last_timestamp is not None:
+                packet_time = max(packet_time, self.last_timestamp + self.MIN_GAP)
+            parsed = parse_packet(packet, packet_time)
             if parsed is not None:
                 readings.append(parsed)
+                self.last_timestamp = packet_time
         return readings
 

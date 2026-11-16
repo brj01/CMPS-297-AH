@@ -48,32 +48,40 @@ async def broadcaster() -> None:
             except Exception: websockets.discard(ws)
         await asyncio.sleep(0.1)
 
+async def classify_segment(segment: list[dict]) -> dict:
+    """Classify one written letter. Always returns the segmenter to IDLE, even on failure."""
+    try:
+        if classifier.model is None:
+            raise RuntimeError("No model is loaded, so the letter could not be classified")
+        watch = manager.watch_samples_for(segment[0]["timestamp"], segment[-1]["timestamp"])
+        samples = {"pen": segment, "watch": watch}
+        result = await asyncio.to_thread(
+            classifier.predict_samples, samples, CONFIDENCE_THRESHOLD, SENSOR_MODE
+        )
+        result.update({"timestamp": time.time(), "sensor_mode": SENSOR_MODE,
+                       "status": "accepted" if result["accepted"] else "rejected"})
+        if result["accepted"]:
+            text.add(result["letter"])
+    except Exception as exc:  # a failed letter must never stop the session
+        logger.error("Sensor sample processing failed: %s", exc)
+        result = {"accepted": False, "status": "error", "error": str(exc), "timestamp": time.time()}
+    finally:
+        segmenter.reset()
+    prediction_history.append(result)
+    if len(prediction_history) > 100:
+        del prediction_history[:-100]
+    for ws in list(websockets):
+        try: await ws.send_json({"type": "prediction", "data": result})
+        except Exception: websockets.discard(ws)
+    return result
+
 async def process_sensor_samples() -> None:
     while True:
         if session_active and manager.sample_queue:
             sample = manager.sample_queue.popleft()
             segment = segmenter.update(sample)
-            if segment and classifier.model is not None:
-                try:
-                    watch = manager.watch_samples_for(segment[0]["timestamp"], segment[-1]["timestamp"])
-                    samples = {"pen": segment, "watch": watch}
-                    result = await asyncio.to_thread(
-                        classifier.predict_samples, samples, CONFIDENCE_THRESHOLD, SENSOR_MODE
-                    )
-                    result.update({"timestamp": time.time(), "sensor_mode": SENSOR_MODE,
-                                   "status": "accepted" if result["accepted"] else "rejected"})
-                    prediction_history.append(result)
-                    if len(prediction_history) > 100:
-                        del prediction_history[:-100]
-                    if result["accepted"]:
-                        text.add(result["letter"])
-                    segmenter.reset()
-                    for ws in list(websockets):
-                        try: await ws.send_json({"type": "prediction", "data": result})
-                        except Exception: websockets.discard(ws)
-                except (ValueError, FileNotFoundError, RuntimeError) as exc:
-                    logger.error("Sensor sample processing failed: %s", exc)
-                    prediction_history.append({"accepted": False, "status": "error", "error": str(exc), "timestamp": time.time()})
+            if segment:
+                await classify_segment(segment)
         await asyncio.sleep(0.005)
 
 @asynccontextmanager
