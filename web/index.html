@@ -62,7 +62,7 @@
       <div class="letters">
         <div class="paper" id="paper">
           <canvas id="trace" aria-label="The shape you wrote in the air"></canvas>
-          <p class="paper-hint" id="paper-hint">Write one capital letter in the air,<br>then hold still for a moment.</p>
+          <p class="paper-hint" id="paper-hint"><span>Write one capital letter in the air,<br>then hold still for a moment.<small>First time? Press <b>Calibrate</b> and draw one circle.</small></span></p>
         </div>
 
         <div class="verdict" aria-live="polite">
@@ -80,7 +80,7 @@
         <span class="status-mark" aria-hidden="true"></span>
         <span class="status-text" id="letters-status-text" role="status">Connect your sensor to start.</span>
         <span class="status-actions">
-          <button class="btn btn-ghost" id="calibrate" type="button" title="Measures how much the sensor jitters at rest, so tiny movements aren’t mistaken for writing">Calibrate</button>
+          <button class="btn btn-ghost" id="calibrate" type="button" title="Hold still, then draw one clockwise circle: measures sensor noise, and where and how big your page is">Calibrate</button>
           <button class="btn btn-ghost" id="listen-toggle" type="button" aria-pressed="false">Pause</button>
           <button class="btn btn-ghost btn-icon" id="open-settings" type="button" aria-label="Trace settings" title="Trace settings">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>

@@ -171,3 +171,58 @@ test('up on the page is always up in the room, whatever the heading', () => {
     assert.ok(s > 0.95, `yaw ${yaw}: similarity ${s.toFixed(3)}`);
   }
 });
+
+// ---- circle calibration ----------------------------------------------------
+import { pageFromCircle } from '../../web/js/letters.js';
+
+// Writing on a board the writer faces at `boardYaw` (tilted back by `tilt`),
+// while the sensor's own heading is `sensorYaw` (it can point anywhere).
+function synthOnBoard(path2d, { boardYaw = 20, tilt = 0, sensorYaw = 110 } = {}) {
+  const fs = 100, g = 9.80665, D = Math.PI / 180;
+  const f = [Math.cos(boardYaw * D), Math.sin(boardYaw * D), 0];
+  const right = [f[1], -f[0], 0];
+  const up = [-f[0] * Math.sin(tilt * D), -f[1] * Math.sin(tilt * D), Math.cos(tilt * D)];
+  const pts = [...Array(30).fill(path2d[0]), ...path2d, ...Array(70).fill(path2d[path2d.length - 1])];
+  const pos = pts.map(([x, y]) => [0, 1, 2].map((k) => right[k] * x + up[k] * y));
+  const samples = pos.map((_, i) => {
+    const at = (j, k) => pos[Math.min(pos.length - 1, Math.max(0, j))][k];
+    const a = [0, 1, 2].map((k) => (at(i + 1, k) - 2 * at(i, k) + at(i - 1, k)) * fs * fs);
+    const speed = Math.hypot(...[0, 1, 2].map((k) => at(i + 1, k) - at(i - 1, k)));
+    const angle = [3 * Math.sin(i / 13), -15 + 4 * Math.sin(i / 17), sensorYaw + 3 * Math.sin(i / 11)];
+    const R = rotationMatrix(angle);
+    const w = [a[0] / g, a[1] / g, a[2] / g + 1];
+    const acc = [0, 1, 2].map((c) => R[0][c] * w[0] + R[1][c] * w[1] + R[2][c] * w[2] + 0.01);
+    return { t: 50 + i / fs, acc, gyro: speed > 1e-6 ? [80, 10, 5] : [0.1, 0, 0], angle };
+  });
+  return { samples, expected: pts.map(([x, y]) => [x, -y]) };
+}
+const smooth = (n) => Array.from({ length: n }, (_, i) => { const u = (i + 1) / n; return 10 * u ** 3 - 15 * u ** 4 + 6 * u ** 5; });
+const clockwiseCircle = (r = 0.06, secs = 1.0) => smooth(secs * 100).map((e) => [r * Math.sin(2 * Math.PI * e), r * Math.cos(2 * Math.PI * e) - r]);
+const letterL = () => [...smooth(60).map((e) => [0, -0.12 * e]), ...smooth(50).map((e) => [0.08 * e, -0.12])];
+
+test('circle calibration finds the page even when the sensor points elsewhere', () => {
+  const board = { boardYaw: 20, sensorYaw: 110 }; // sensor heading 90° off the board
+  const circle = synthOnBoard(clockwiseCircle(), board);
+  const page = pageFromCircle(circle.samples);
+  assert.ok(Math.abs(page.size - 0.12) < 0.02, `size ${page.size.toFixed(3)} m`);
+  const L = synthOnBoard(letterL(), board);
+  const path = movementPath(L.samples);
+  const calibrated = similarity(projectToPage(path, L.samples, page), L.expected);
+  const guessed = similarity(projectToPage(path, L.samples), L.expected);
+  assert.ok(calibrated > 0.95, `calibrated ${calibrated.toFixed(3)}`);
+  assert.ok(guessed < 0.9, `without calibration ${guessed.toFixed(3)} (the case calibration exists for)`);
+});
+
+test('circle calibration handles a tilted page and keeps it un-mirrored', () => {
+  const board = { boardYaw: -60, tilt: 35, sensorYaw: -60 };
+  const page = pageFromCircle(synthOnBoard(clockwiseCircle(0.05, 0.9), board).samples);
+  const shape = [...smooth(50).map((e) => [0.1 * e, 0]), ...smooth(40).map((e) => [0.1, -0.06 * e]), ...smooth(40).map((e) => [0.1 - 0.05 * e, -0.06 + 0.03 * e])];
+  const s = synthOnBoard(shape, board);
+  const sim = similarity(projectToPage(movementPath(s.samples), s.samples, page), s.expected);
+  assert.ok(sim > 0.95, `similarity ${sim.toFixed(3)}`);
+});
+
+test('a line instead of a circle is rejected with a helpful message', () => {
+  const line = synthOnBoard(smooth(80).map((e) => [0.12 * e, 0]));
+  assert.throws(() => pageFromCircle(line.samples), /line than a circle/);
+});

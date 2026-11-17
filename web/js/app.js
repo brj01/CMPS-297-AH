@@ -1,5 +1,5 @@
 import { Sensor, gestureRow } from './sensor.js';
-import { Segmenter, State, predictLetter, tracePoints } from './letters.js';
+import { Segmenter, State, predictLetter, tracePoints, pageFromCircle } from './letters.js';
 import { GestureMode, GESTURES, GLYPHS, LABELS, loadGestureModel } from './gestures.js';
 import { Instruments } from './instruments.js';
 import { WatchLink } from './watch.js';
@@ -82,6 +82,7 @@ sensor.addEventListener('state', (e) => {
   const { state, detail } = e.detail;
   if (state !== 'live' && state !== 'demo') { segmenter.reset(); }
   if (state === 'demo' || state === 'live') instruments.clear();
+  if (state === 'connecting') { trace.page = null; if (calibration) endCalibration(); }
   renderSensor(state, detail);
 });
 
@@ -123,6 +124,7 @@ const trace = {
   canvas: $('trace'),
   paper: $('paper'),
   samples: [],
+  page: null, // set by the circle calibration
   options: { method: 'movement', swap: false, flipX: false, flipY: false, ...store.get('airwrite.trace', {}) },
   resize() { this.draw(this.samples, this.final); },
   draw(samples, final = false) {
@@ -138,7 +140,7 @@ const trace = {
     this.paper.dataset.hasTrace = String(samples.length > 1);
     if (samples.length < 2) return;
 
-    const { points: pts, pageWidth } = tracePoints(samples, { ...this.options, still: segmenter.stop, live: !final });
+    const { points: pts, pageWidth } = tracePoints(samples, { ...this.options, page: this.page, still: segmenter.stop, live: !final });
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
     const left = 64 * dpr, pad = 28 * dpr;
@@ -202,7 +204,7 @@ $('download-letter').addEventListener('click', () => {
 /* ---------------------------------------------------------------- letters */
 
 let listening = true;
-let calibration = null;   // { samples, until } while calibrating
+let calibration = null;   // { phase: 'still' | 'circle', samples, started } while calibrating
 let reading = false;
 let wasWriting = false;
 let traceQueued = false;
@@ -227,21 +229,55 @@ $('listen-toggle').addEventListener('click', (e) => {
   refreshLettersStatus();
 });
 
-$('calibrate').addEventListener('click', () => {
+// Calibration has two steps: hold still (measures sensor noise), then draw
+// one clockwise circle (measures the page: its plane, orientation and size).
+const calibrateBtn = $('calibrate');
+function endCalibration() {
+  calibration = null;
+  calibrateBtn.textContent = 'Calibrate';
+  segmenter.reset();
+}
+
+calibrateBtn.addEventListener('click', () => {
+  if (calibration) { // "Skip circle" / "Cancel"
+    const skippedCircle = calibration.phase === 'circle';
+    endCalibration();
+    if (skippedCircle) setStatus('letters', 'ready', 'Skipped the circle; the page is guessed from the pen’s direction. Write a letter, then hold still.');
+    else refreshLettersStatus();
+    return;
+  }
   if (sensor.state !== 'live') { setStatus('letters', 'error', 'Connect your sensor first, then calibrate.'); return; }
   segmenter.reset();
-  calibration = { samples: [], started: performance.now() };
-  setStatus('letters', 'calibrating', 'Hold the sensor completely still…');
+  calibration = { phase: 'still', samples: [], started: performance.now() };
+  calibrateBtn.textContent = 'Cancel';
+  setStatus('letters', 'calibrating', 'Step 1 of 2: hold the pen completely still…');
 });
 
-function finishCalibration() {
+function startCircleStep() {
   try {
-    const r = segmenter.calibrate(calibration.samples);
-    calibration = null;
-    setStatus('letters', 'ready', `Calibrated (resting noise ${r.baseline.toFixed(1)}). Write a letter, then hold still.`);
+    segmenter.calibrate(calibration.samples);
   } catch (err) {
-    calibration = null;
+    endCalibration();
     setStatus('letters', 'error', err.message);
+    return;
+  }
+  segmenter.reset();
+  calibration = { phase: 'circle' };
+  calibrateBtn.textContent = 'Skip circle';
+  trace.draw([]);
+  setStatus('letters', 'calibrating', 'Step 2 of 2: draw one circle clockwise in front of you, about the size of a letter, then hold still.');
+}
+
+function finishCircle(samples) {
+  try {
+    trace.page = pageFromCircle(samples, { still: segmenter.stop });
+    trace.draw(samples, true);
+    endCalibration();
+    setStatus('letters', 'ready', `Calibrated. Your circle was about ${Math.round(trace.page.size * 100)} cm across; the page now follows it. Write a letter, then hold still.`);
+  } catch (err) {
+    trace.draw(samples, true);
+    segmenter.reset();
+    setStatus('letters', 'error', `${err.message}, or press Skip circle.`);
   }
 }
 
@@ -285,11 +321,20 @@ async function readLetter(samples) {
 }
 
 function onLetterSample(s) {
-  if (calibration) {
+  if (calibration && calibration.phase === 'still') {
     calibration.samples.push(s);
     const left = 2 - (performance.now() - calibration.started) / 1000;
-    if (left <= 0) finishCalibration();
-    else setStatus('letters', 'calibrating', `Hold the sensor completely still… ${left.toFixed(1)} s`);
+    if (left <= 0) startCircleStep();
+    else setStatus('letters', 'calibrating', `Step 1 of 2: hold the pen completely still… ${left.toFixed(1)} s`);
+    return;
+  }
+  if (calibration && calibration.phase === 'circle') {
+    const circle = segmenter.update(s);
+    if (segmenter.state === State.WRITING && !traceQueued) {
+      traceQueued = true;
+      requestAnimationFrame(() => { traceQueued = false; if (segmenter.state === State.WRITING) trace.draw(segmenter.active); });
+    }
+    if (circle) finishCircle(circle);
     return;
   }
   if (!listening || reading) return;

@@ -174,7 +174,8 @@ export function movementPath(samples, { still = 0.8, live = false } = {}) {
 // pen's heading. The heading also decides which way is left, so a mirrored
 // result can be fixed with the Mirror setting.
 const LOCK_SPREAD = 0.02; // metres
-export function projectToPage(path, samples) {
+export function projectToPage(path, samples, page = null) {
+  if (page) return path.map((q) => [dot(q, page.right), -dot(q, page.up)]); // measured by the circle calibration
   const yaw = samples[0].angle[2] * DEG;
   const forward = [Math.cos(yaw), Math.sin(yaw), 0];
   let right = cross(forward, [0, 0, 1]);
@@ -191,6 +192,70 @@ export function projectToPage(path, samples) {
     }
   }
   return path.map((q) => [dot(q, right), -q[2]]);
+}
+
+/* ---- circle calibration --------------------------------------------------
+ * The writer draws one clockwise circle in front of them. Its plane is the
+ * page, "clockwise as seen by the writer" fixes which side they're on (so the
+ * page can't come out mirrored), and its size sets the scale.
+ */
+
+// Principal axes of a point cloud: eigenvalues (variances, largest first) and
+// matching unit eigenvectors, via Jacobi rotations on the covariance matrix.
+function principalAxes(points) {
+  const n = points.length;
+  const c = [0, 1, 2].map((k) => points.reduce((sum, p) => sum + p[k], 0) / n);
+  const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+  for (const p of points) for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) A[i][j] += ((p[i] - c[i]) * (p[j] - c[j])) / n;
+  const V = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  for (let sweep = 0; sweep < 30; sweep++) {
+    for (const [i, j] of [[0, 1], [0, 2], [1, 2]]) {
+      if (Math.abs(A[i][j]) < 1e-18) continue;
+      const th = 0.5 * Math.atan2(2 * A[i][j], A[j][j] - A[i][i]);
+      const co = Math.cos(th), si = Math.sin(th);
+      for (let k = 0; k < 3; k++) { const a = A[k][i], b = A[k][j]; A[k][i] = co * a - si * b; A[k][j] = si * a + co * b; }
+      for (let k = 0; k < 3; k++) { const a = A[i][k], b = A[j][k]; A[i][k] = co * a - si * b; A[j][k] = si * a + co * b; }
+      for (let k = 0; k < 3; k++) { const a = V[k][i], b = V[k][j]; V[k][i] = co * a - si * b; V[k][j] = si * a + co * b; }
+    }
+  }
+  const order = [0, 1, 2].sort((a, b) => A[b][b] - A[a][a]);
+  return { values: order.map((i) => A[i][i]), vectors: order.map((i) => [V[0][i], V[1][i], V[2][i]]) };
+}
+
+const norm3 = (v) => { const m = Math.hypot(...v) || 1; return v.map((x) => x / m); };
+
+// Turns a drawn circle into a page: { right, up, size } in room coordinates.
+// Throws an Error with a message for the writer if it doesn't look like a circle.
+export function pageFromCircle(samples, { still = 0.8 } = {}) {
+  const path = movementPath(samples, { still });
+  const moving = path.filter((_, i) => intensity(samples[i]) >= still);
+  if (moving.length < 30) throw new Error('That was too short. Draw one full circle, then hold still');
+  const { values: [l1, l2, l3], vectors: [, , normal0] } = principalAxes(moving);
+  const diameter = 2 * Math.sqrt(l1 + l2); // for a circle of radius r, l1 = l2 = r²/2
+  if (diameter < 0.03) throw new Error('That circle was too small to measure. Draw it about the size of a letter');
+  if (diameter > 0.8) throw new Error('That circle came out far too big, so the measurement drifted. Try a smaller, quicker circle');
+  if (l2 / l1 < 0.25) throw new Error('That looked more like a line than a circle. Try a rounder circle');
+  if (l3 / l2 > 0.4) throw new Error('That circle wasn’t flat enough to find the page. Keep it on one imaginary surface');
+
+  let normal = normal0;
+  const page = () => {
+    const z = [0, 0, 1];
+    let up = z.map((v, k) => v - dot(z, normal) * normal[k]);
+    if (Math.hypot(...up) < 0.4) { // a flat page (like a desk): "up" is away from the writer
+      const yaw = samples[0].angle[2] * DEG;
+      const f = [Math.cos(yaw), Math.sin(yaw), 0];
+      up = f.map((v, k) => v - dot(f, normal) * normal[k]);
+    }
+    up = norm3(up);
+    return { right: norm3(cross(normal, up)), up };
+  };
+  let { right, up } = page();
+  // Signed area on screen (y down): positive means clockwise as the writer sees it.
+  const pts = moving.map((q) => [dot(q, right), -dot(q, up)]);
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) { const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % pts.length]; area += x1 * y2 - x2 * y1; }
+  if (area < 0) { normal = normal.map((v) => -v); ({ right, up } = page()); }
+  return { right, up, size: diameter };
 }
 
 // Turn-based drawing: yaw moves left/right, pitch moves up/down. Yaw is
@@ -213,15 +278,16 @@ function tiltPoints(samples) {
 
 // 2D points for drawing, plus how much the page width represents in the
 // points' units. The page has a fixed scale, so strokes keep their size.
-export function tracePoints(samples, { method = 'movement', still = 0.8, live = false, swap = false, flipX = false, flipY = false } = {}) {
+export function tracePoints(samples, { method = 'movement', still = 0.8, live = false, page = null, swap = false, flipX = false, flipY = false } = {}) {
   if (!samples.length) return { points: [], pageWidth: 1 };
   const movement = method === 'movement';
-  const raw = movement ? projectToPage(movementPath(samples, { still, live }), samples) : tiltPoints(samples);
+  const raw = movement ? projectToPage(movementPath(samples, { still, live }), samples, page) : tiltPoints(samples);
   const points = raw.map(([x0, y0]) => {
     let [x, y] = swap ? [y0, x0] : [x0, y0];
     if (flipX) x = -x;
     if (flipY) y = -y;
     return [x, y];
   });
-  return { points, pageWidth: movement ? 0.3 : 70 }; // 30 cm, or 70° of turn
+  // 30 cm (or 70° of turn); after circle calibration, the circle fills about 40% of the page width.
+  return { points, pageWidth: movement ? (page ? page.size / 0.4 : 0.3) : 70 };
 }

@@ -241,6 +241,8 @@ kbd { font: 500 11px var(--mono); color: var(--ink-3); border: 1px solid var(--s
   transition: opacity 0.3s;
 }
 .paper[data-has-trace="true"] .paper-hint { opacity: 0; }
+.paper-hint small { display: block; margin-top: 14px; font: 400 14px var(--body); font-style: normal; color: var(--ink-3); }
+.paper-hint small b { font-weight: 600; color: var(--ink-2); }
 
 .verdict { display: flex; flex-direction: column; justify-content: center; padding: 8px 4px; min-width: 0; }
 .big-letter {
