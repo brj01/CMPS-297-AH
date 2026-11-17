@@ -1,5 +1,5 @@
 import { Sensor, gestureRow } from './sensor.js';
-import { Segmenter, State, predictLetter, tracePoints, pageFromCircle } from './letters.js';
+import { Segmenter, State, predictLetter, tracePoints, pageFromCircle, restingOffset } from './letters.js';
 import { GestureMode, GESTURES, GLYPHS, LABELS, loadGestureModel } from './gestures.js';
 import { Instruments } from './instruments.js';
 import { WatchLink } from './watch.js';
@@ -82,7 +82,7 @@ sensor.addEventListener('state', (e) => {
   const { state, detail } = e.detail;
   if (state !== 'live' && state !== 'demo') { segmenter.reset(); }
   if (state === 'demo' || state === 'live') instruments.clear();
-  if (state === 'connecting') { trace.page = null; if (calibration) endCalibration(); }
+  if (state === 'connecting') { trace.page = null; trace.offset = null; if (calibration) endCalibration(); }
   renderSensor(state, detail);
 });
 
@@ -124,7 +124,8 @@ const trace = {
   canvas: $('trace'),
   paper: $('paper'),
   samples: [],
-  page: null, // set by the circle calibration
+  page: null,   // set by the circle calibration
+  offset: null, // accelerometer error, measured while holding still
   options: { method: 'movement', swap: false, flipX: false, flipY: false, ...store.get('airwrite.trace', {}) },
   resize() { this.draw(this.samples, this.final); },
   draw(samples, final = false) {
@@ -140,7 +141,7 @@ const trace = {
     this.paper.dataset.hasTrace = String(samples.length > 1);
     if (samples.length < 2) return;
 
-    const { points: pts, pageWidth } = tracePoints(samples, { ...this.options, page: this.page, still: segmenter.stop, live: !final });
+    const { points: pts, pageWidth } = tracePoints(samples, { ...this.options, page: this.page, offset: this.offset, live: !final });
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
     const left = 64 * dpr, pad = 28 * dpr;
@@ -256,6 +257,7 @@ calibrateBtn.addEventListener('click', () => {
 function startCircleStep() {
   try {
     segmenter.calibrate(calibration.samples);
+    trace.offset = restingOffset(calibration.samples);
   } catch (err) {
     endCalibration();
     setStatus('letters', 'error', err.message);
@@ -270,7 +272,7 @@ function startCircleStep() {
 
 function finishCircle(samples) {
   try {
-    trace.page = pageFromCircle(samples, { still: segmenter.stop });
+    trace.page = pageFromCircle(samples, { offset: trace.offset });
     trace.draw(samples, true);
     endCalibration();
     setStatus('letters', 'ready', `Calibrated. Your circle was about ${Math.round(trace.page.size * 100)} cm across; the page now follows it. Write a letter, then hold still.`);

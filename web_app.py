@@ -64,6 +64,17 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="AirWrite", lifespan=lifespan, docs_url=None, redoc_url=None)
 
 
+@app.middleware("http")
+async def always_fresh_site_files(request: Request, call_next):
+    """Make browsers check for a newer page/script on every load, so an update
+    shows up without a hard refresh. Unchanged files still come back as a
+    cheap "304 Not Modified"."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 class Sample(BaseModel):
     t: float
     acc: list[float] = Field(min_length=3, max_length=3)
@@ -167,8 +178,7 @@ async def watch_unpair(code: str):
 async def gesture_file(name: str):
     if name not in GESTURE_FILES:
         raise HTTPException(404)
-    return FileResponse(ROOT / "gestures" / name, media_type=GESTURE_FILES[name],
-                        headers={"Cache-Control": "public, max-age=3600"})
+    return FileResponse(ROOT / "gestures" / name, media_type=GESTURE_FILES[name])
 
 
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="site")

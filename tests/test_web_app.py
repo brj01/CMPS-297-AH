@@ -26,6 +26,11 @@ def test_page_and_gesture_files_are_served(client):
     assert client.get("/demo/gestures.json").status_code == 200
 
 
+def test_site_files_are_never_served_stale(client):
+    for path in ("/", "/js/app.js", "/js/letters.js", "/css/site.css", "/gestures/core.js"):
+        assert client.get(path).headers["cache-control"] == "no-cache", path
+
+
 def test_training_data_and_old_demo_are_not_served(client):
     assert client.get("/gestures/all_training_windows.npz").status_code == 404
     assert client.get("/gestures/gesture_demo.html").status_code == 404

@@ -226,3 +226,43 @@ test('a line instead of a circle is rejected with a helpful message', () => {
   const line = synthOnBoard(smooth(80).map((e) => [0.12 * e, 0]));
   assert.throws(() => pageFromCircle(line.samples), /line than a circle/);
 });
+
+// A real sensor at rest: a constant accelerometer offset (typical: a few
+// hundredths of a g) plus tremor that keeps the rotation speed above the
+// "still" threshold, so the whole time counts as one stroke in progress.
+function restingPen({ secs = 3, offset = [0.03, -0.02, 0.025] } = {}) {
+  let seed = 11;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 2;
+  return Array.from({ length: secs * 100 }, (_, i) => {
+    const angle = [4 + 0.2 * rnd(), -20 + 0.2 * rnd(), 75 + 0.2 * rnd()];
+    const R = rotationMatrix(angle);
+    const acc = [0, 1, 2].map((c) => R[2][c] + offset[c] + 0.008 * rnd());
+    return { t: 10 + i / 100, acc, gyro: [1.5 + rnd(), 1.2 * rnd(), 1.0 * rnd()], angle };
+  });
+}
+
+test('a resting pen with an accelerometer offset does not draw a growing line while "writing"', () => {
+  const samples = restingPen();
+  const page = projectToPage(movementPath(samples, { live: true }), samples);
+  const extent = Math.max(...page.map((p) => Math.hypot(p[0], p[1])));
+  assert.ok(extent < 0.015, `drew ${(extent * 100).toFixed(1)} cm while not moving`);
+});
+
+test('holding still measures the accelerometer offset', async () => {
+  const { restingOffset } = await import('../../web/js/letters.js');
+  const off = restingOffset(restingPen({ secs: 2, offset: [0.03, -0.02, 0.025] }));
+  [0.03, -0.02, 0.025].forEach((want, k) => assert.ok(Math.abs(off[k] - want) < 0.003, `axis ${k}: ${off[k].toFixed(4)}`));
+});
+
+test('hand tremor alone never starts a letter, and a letter ends at a tremor-y pause', () => {
+  const seg = new Segmenter();
+  for (const s of restingPen({ secs: 2 })) assert.equal(seg.update(s), null);
+  assert.equal(seg.state, State.IDLE);
+  // a real stroke, then resting with tremor: the letter should end ~0.5 s into the pause
+  let t = 20, letter = null;
+  for (let i = 0; i < 60; i++) seg.update({ t: (t += 0.01), acc: [0.4, 0.1, 1.1], gyro: [120, 40, 10], angle: [0, 0, 0] });
+  assert.equal(seg.state, State.WRITING);
+  for (const s of restingPen({ secs: 2 })) { letter = letter || seg.update({ ...s, t: (t += 0.01) }); }
+  assert.ok(letter, 'letter ended');
+  assert.ok(letter[letter.length - 1].t - letter[0].t < 1.4, `letter lasted ${(letter[letter.length - 1].t - letter[0].t).toFixed(2)} s`);
+});

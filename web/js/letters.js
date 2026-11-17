@@ -10,6 +10,7 @@ export const intensity = (s) => norm(s.gyro) + Math.abs(norm(s.acc) - 1);
 export class Segmenter {
   constructor({ start = 2.0, stop = 0.8, rest = 0.5, minDuration = 0.3, maxDuration = 5.0, preMotion = 0.15 } = {}) {
     Object.assign(this, { start, stop, rest, minDuration, maxDuration, preMotion });
+    this.window = []; // last 0.1 s, for the motion-based stillness check (kept across resets)
     this.reset();
   }
 
@@ -27,15 +28,20 @@ export class Segmenter {
     const level = intensity(s);
     this.recent.push(s);
     while (this.recent.length && now - this.recent[0].t > this.preMotion) this.recent.shift();
+    // Unlike the desktop app, hand tremor never counts as writing: the pen is
+    // also "still" when it's barely rotating with a steady acceleration.
+    this.window.push(s);
+    if (this.window.length > STILL_WINDOW) this.window.shift();
+    const steady = this.window.length < STILL_WINDOW || stillMask(this.window)[this.window.length - 1];
 
-    if (this.state === State.IDLE && level >= this.start) {
+    if (this.state === State.IDLE && level >= this.start && !steady) {
       this.state = State.WRITING;
       this.startedAt = now;
       this.quietSince = null;
       this.active = [...this.recent];
     } else if (this.state === State.WRITING) {
       this.active.push(s);
-      if (level < this.stop) this.quietSince = this.quietSince ?? now;
+      if (level < this.stop || steady) this.quietSince = this.quietSince ?? now;
       else this.quietSince = null;
       const duration = now - this.startedAt;
       if (duration >= this.maxDuration || (this.quietSince !== null && now - this.quietSince >= this.rest)) {
@@ -108,8 +114,21 @@ const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a
 
 const NOISE_FLOOR = 0.15; // m/s² (~0.015 g): smaller accelerations are treated as sensor noise
 
-function linearAcceleration(s) {
-  const a = mul(rotationMatrix(s.angle), s.acc);
+// Constant accelerometer error, measured while the pen is held still: what the
+// sensor reads minus the gravity it should read in that orientation (g units).
+export function restingOffset(samples) {
+  if (samples.length < 10) return [0, 0, 0];
+  const sum = [0, 0, 0];
+  for (const s of samples) {
+    const R = rotationMatrix(s.angle); // body → room; gravity in the body frame is R^T·[0,0,1]
+    for (let k = 0; k < 3; k++) sum[k] += s.acc[k] - R[2][k];
+  }
+  return sum.map((x) => x / samples.length);
+}
+
+function linearAcceleration(s, offset) {
+  const acc = offset ? s.acc.map((x, k) => x - offset[k]) : s.acc;
+  const a = mul(rotationMatrix(s.angle), acc);
   const lin = [a[0] * G, a[1] * G, (a[2] - 1) * G];
   const m = Math.hypot(...lin);
   if (m <= NOISE_FLOOR) return [0, 0, 0];
@@ -117,39 +136,59 @@ function linearAcceleration(s) {
   return lin.map((x) => x * k);
 }
 
-// Stretches of consecutive movement, ignoring 1–2 sample dropouts.
-function movingRuns(samples, still) {
-  const runs = [];
-  let start = -1, lastMoving = -10;
-  samples.forEach((s, i) => {
-    if (intensity(s) < still) return;
-    if (start < 0 || i - lastMoving > 3) { if (start >= 0) runs.push([start, lastMoving]); start = i; }
-    lastMoving = i;
+// Whether the pen is still at each sample, judged from the last 0.1 s only (so
+// it never changes for samples already drawn): barely rotating and with a
+// steady acceleration. Hand tremor counts as still; any real stroke doesn't.
+const STILL_WINDOW = 10;      // samples
+const STILL_GYRO = 10;        // deg/s, the fastest allowed rotation in the window
+const STILL_ACC_SPREAD = 0.02; // g, spread of the acceleration size in the window
+export function stillMask(samples) {
+  return samples.map((_, i) => {
+    let gyroMax = 0, sum = 0, sumSq = 0, count = 0;
+    for (let j = Math.max(0, i - STILL_WINDOW + 1); j <= i; j++) {
+      const s = samples[j];
+      gyroMax = Math.max(gyroMax, Math.hypot(...s.gyro));
+      const a = Math.hypot(...s.acc);
+      sum += a; sumSq += a * a; count++;
+    }
+    const spread = Math.sqrt(Math.max(0, sumSq / count - (sum / count) ** 2));
+    return gyroMax < STILL_GYRO && spread < STILL_ACC_SPREAD;
   });
-  if (start >= 0) runs.push([start, lastMoving]);
+}
+
+// Stretches of movement between still periods.
+function movingRuns(still) {
+  const runs = [];
+  let start = -1;
+  still.forEach((isStill, i) => {
+    if (!isStill && start < 0) start = i;
+    if (isStill && start >= 0) { runs.push([start, i]); start = -1; }
+  });
+  if (start >= 0) runs.push([start, still.length - 1]);
   return runs;
 }
 
 // Pen position in metres (room coordinates, z up) for each sample.
-// Gravity is removed using the sensor's orientation and the rest is integrated
-// twice. Whenever the pen is still, its speed is reset to zero. Each finished
-// stretch of movement must also end at zero speed, so speed left over at its
-// end is drift and is removed linearly over the stretch. With `live`, a
-// stretch still in progress is integrated forward only (with light damping),
-// so lines already on screen don't move while you write.
-export function movementPath(samples, { still = 0.8, live = false } = {}) {
+// Gravity (and any measured accelerometer offset) is removed using the
+// sensor's orientation and the rest is integrated twice. Whenever the pen is
+// still, its speed is zero. Each finished stretch of movement must end at zero
+// speed, so speed left over at its end is drift and is removed linearly over
+// the stretch. With `live`, a stretch still in progress is integrated forward
+// only (with damping), so lines already on screen don't move while you write.
+export function movementPath(samples, { live = false, offset = null } = {}) {
   const n = samples.length;
   const p = samples.map(() => [0, 0, 0]);
   if (n < 3) return p;
-  const lin = samples.map(linearAcceleration);
+  const lin = samples.map((s) => linearAcceleration(s, offset));
   const v = samples.map(() => [0, 0, 0]);
-  for (const [r0, r1] of movingRuns(samples, still)) {
-    const a = Math.max(0, r0 - 2);
-    const open = live && r1 >= n - 2;
-    const b = open ? n - 1 : Math.min(n - 1, r1 + 2);
+  const still = stillMask(samples);
+  for (const [r0, r1] of movingRuns(still)) {
+    const a = Math.max(0, r0 - 1);
+    const open = live && !still[n - 1] && r1 === n - 1;
+    const b = r1;
     for (let i = a + 1; i <= b; i++) {
       const dt = samples[i].t - samples[i - 1].t;
-      const damp = open ? Math.exp(-dt / 1.5) : 1;
+      const damp = open ? Math.exp(-dt / 1.0) : 1;
       for (let k = 0; k < 3; k++) v[i][k] = (v[i - 1][k] + 0.5 * (lin[i][k] + lin[i - 1][k]) * dt) * damp;
     }
     if (!open) {
@@ -226,9 +265,10 @@ const norm3 = (v) => { const m = Math.hypot(...v) || 1; return v.map((x) => x / 
 
 // Turns a drawn circle into a page: { right, up, size } in room coordinates.
 // Throws an Error with a message for the writer if it doesn't look like a circle.
-export function pageFromCircle(samples, { still = 0.8 } = {}) {
-  const path = movementPath(samples, { still });
-  const moving = path.filter((_, i) => intensity(samples[i]) >= still);
+export function pageFromCircle(samples, { offset = null } = {}) {
+  const path = movementPath(samples, { offset });
+  const still = stillMask(samples);
+  const moving = path.filter((_, i) => !still[i]);
   if (moving.length < 30) throw new Error('That was too short. Draw one full circle, then hold still');
   const { values: [l1, l2, l3], vectors: [, , normal0] } = principalAxes(moving);
   const diameter = 2 * Math.sqrt(l1 + l2); // for a circle of radius r, l1 = l2 = r²/2
@@ -278,10 +318,10 @@ function tiltPoints(samples) {
 
 // 2D points for drawing, plus how much the page width represents in the
 // points' units. The page has a fixed scale, so strokes keep their size.
-export function tracePoints(samples, { method = 'movement', still = 0.8, live = false, page = null, swap = false, flipX = false, flipY = false } = {}) {
+export function tracePoints(samples, { method = 'movement', live = false, page = null, offset = null, swap = false, flipX = false, flipY = false } = {}) {
   if (!samples.length) return { points: [], pageWidth: 1 };
   const movement = method === 'movement';
-  const raw = movement ? projectToPage(movementPath(samples, { still, live }), samples, page) : tiltPoints(samples);
+  const raw = movement ? projectToPage(movementPath(samples, { live, offset }), samples, page) : tiltPoints(samples);
   const points = raw.map(([x0, y0]) => {
     let [x, y] = swap ? [y0, x0] : [x0, y0];
     if (flipX) x = -x;
