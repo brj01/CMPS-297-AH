@@ -1,5 +1,5 @@
 import { Sensor, gestureRow } from './sensor.js';
-import { Segmenter, State, predictLetter, tracePoints, pageFromCircle, restingOffset, stillGyroLimit, strokeMask } from './letters.js';
+import { Segmenter, State, predictLetter, tracePoints, pageFromCircle, restingOffset, stillGyroLimit } from './letters.js';
 import { GestureMode, GESTURES, GLYPHS, LABELS, loadGestureModel } from './gestures.js';
 import { Instruments } from './instruments.js';
 import { WatchLink } from './watch.js';
@@ -126,7 +126,7 @@ const trace = {
   samples: [],
   page: null,   // set by the circle calibration
   offset: null, // accelerometer error, measured while holding still
-  options: (({ swap = false, flipX = false, flipY = false, strokes = false }) => ({ swap, flipX, flipY, strokes }))(store.get('airwrite.trace', {})),
+  options: (({ swap = false, flipX = false, flipY = false }) => ({ swap, flipX, flipY }))(store.get('airwrite.trace', {})),
   resize() { this.draw(this.samples, this.final); },
   draw(samples, final = false) {
     this.samples = samples;
@@ -161,43 +161,18 @@ const trace = {
     const oy = fit(minY, maxY, pts[0][1], h, 0.3, pad);
     const at = (p) => [ox + p[0] * scale, oy + p[1] * scale];
 
-    const pathOf = (from, to) => {
-      const path = new Path2D();
-      for (let i = from; i <= to; i++) { const [x, y] = at(pts[i]); if (i > from) path.lineTo(x, y); else path.moveTo(x, y); }
-      return path;
-    };
-    const ink = (path, underlayAlpha) => {
-      ctx.strokeStyle = cssVar('--pink');
-      ctx.globalAlpha = underlayAlpha;
-      ctx.lineWidth = 16 * dpr;
-      ctx.stroke(path);
-      ctx.globalAlpha = 1;
-      ctx.strokeStyle = cssVar('--plum');
-      ctx.lineWidth = 5 * dpr;
-      ctx.stroke(path);
-    };
+    const path = new Path2D();
+    pts.forEach((p, i) => { const [x, y] = at(p); if (i) path.lineTo(x, y); else path.moveTo(x, y); });
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    if (this.options.strokes) {
-      // Experimental: the whole path faintly, then the quick strokes in ink.
-      ctx.strokeStyle = cssVar('--plum');
-      ctx.globalAlpha = 0.22;
-      ctx.lineWidth = 3 * dpr;
-      ctx.setLineDash([2 * dpr, 6 * dpr]);
-      ctx.stroke(pathOf(0, pts.length - 1));
-      ctx.setLineDash([]);
-      ctx.globalAlpha = 1;
-      const mask = strokeMask(pts, samples.map((s) => s.t));
-      for (let i = 0; i < pts.length; i++) {
-        if (!mask[i]) continue;
-        let j = i;
-        while (j + 1 < pts.length && mask[j + 1]) j++;
-        ink(pathOf(i, j), final ? 0.9 : 0.6);
-        i = j;
-      }
-    } else {
-      ink(pathOf(0, pts.length - 1), final ? 0.9 : 0.6);
-    }
+    ctx.strokeStyle = cssVar('--pink');
+    ctx.globalAlpha = final ? 0.9 : 0.6;
+    ctx.lineWidth = 16 * dpr;
+    ctx.stroke(path);
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = cssVar('--plum');
+    ctx.lineWidth = 5 * dpr;
+    ctx.stroke(path);
     const [sx, sy] = at(pts[0]);
     ctx.fillStyle = cssVar('--rose');
     ctx.beginPath(); ctx.arc(sx, sy, 6 * dpr, 0, Math.PI * 2); ctx.fill();
@@ -206,7 +181,7 @@ const trace = {
 window.addEventListener('resize', () => trace.resize());
 
 const settings = $('settings');
-const opts = { swap: $('opt-swap'), flipX: $('opt-flipx'), flipY: $('opt-flipy'), strokes: $('opt-strokes') };
+const opts = { swap: $('opt-swap'), flipX: $('opt-flipx'), flipY: $('opt-flipy') };
 Object.entries(opts).forEach(([key, input]) => {
   input.checked = !!trace.options[key];
   input.addEventListener('change', () => { trace.options[key] = input.checked; store.set('airwrite.trace', trace.options); trace.resize(); });
