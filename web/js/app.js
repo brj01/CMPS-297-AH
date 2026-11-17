@@ -126,7 +126,7 @@ const trace = {
   samples: [],
   page: null,   // set by the circle calibration
   offset: null, // accelerometer error, measured while holding still
-  options: { method: 'movement', swap: false, flipX: false, flipY: false, ...store.get('airwrite.trace', {}) },
+  options: (({ swap = false, flipX = false, flipY = false }) => ({ swap, flipX, flipY }))(store.get('airwrite.trace', {})),
   resize() { this.draw(this.samples, this.final); },
   draw(samples, final = false) {
     this.samples = samples;
@@ -185,10 +185,6 @@ const opts = { swap: $('opt-swap'), flipX: $('opt-flipx'), flipY: $('opt-flipy')
 Object.entries(opts).forEach(([key, input]) => {
   input.checked = !!trace.options[key];
   input.addEventListener('change', () => { trace.options[key] = input.checked; store.set('airwrite.trace', trace.options); trace.resize(); });
-});
-document.querySelectorAll('input[name="trace-method"]').forEach((radio) => {
-  radio.checked = radio.value === trace.options.method;
-  radio.addEventListener('change', () => { trace.options.method = radio.value; store.set('airwrite.trace', trace.options); trace.resize(); });
 });
 $('open-settings').addEventListener('click', () => settings.showModal());
 $('download-letter').addEventListener('click', () => {
@@ -275,7 +271,10 @@ function finishCircle(samples) {
     trace.page = pageFromCircle(samples, { offset: trace.offset });
     trace.draw(samples, true);
     endCalibration();
-    setStatus('letters', 'ready', `Calibrated. Your circle was about ${Math.round(trace.page.size * 100)} cm across; the page now follows it. Write a letter, then hold still.`);
+    const fused = trace.page.lever
+      ? 'The drawing now follows your pen as you write.'
+      : 'I couldn’t link your pen’s rotation to its movement, so the live drawing will be rougher until you pause. Try a quicker, wrist-driven circle to improve it.';
+    setStatus('letters', 'ready', `Calibrated: your circle was about ${Math.round(trace.page.size * 100)} cm across. ${fused}`);
   } catch (err) {
     trace.draw(samples, true);
     segmenter.reset();

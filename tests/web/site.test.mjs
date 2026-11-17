@@ -71,12 +71,6 @@ test('calibration raises thresholds for a noisy sensor', () => {
   assert.equal(r.stop, 6);
 });
 
-test('trace unwraps yaw across ±180°', () => {
-  const { points: pts } = tracePoints([170, 179, -179, -170].map((yaw, i) => ({ t: i, acc: [0, 0, 1], gyro: [0, 0, 0], angle: [0, 0, yaw] })), { method: 'tilt' });
-  const xs = pts.map((p) => p[0]);
-  assert.ok(Math.abs(xs[3] + 20) < 1e-9); // 20° of continuous turn, not a 340° jump
-});
-
 // ---- movement drawing ------------------------------------------------------
 import { rotationMatrix, movementPath, projectToPage } from '../../web/js/letters.js';
 
@@ -173,7 +167,7 @@ test('up on the page is always up in the room, whatever the heading', () => {
 });
 
 // ---- circle calibration ----------------------------------------------------
-import { pageFromCircle } from '../../web/js/letters.js';
+import { pageFromCircle, restingOffset } from '../../web/js/letters.js';
 
 // Writing on a board the writer faces at `boardYaw` (tilted back by `tilt`),
 // while the sensor's own heading is `sensorYaw` (it can point anywhere).
@@ -265,4 +259,98 @@ test('hand tremor alone never starts a letter, and a letter ends at a tremor-y p
   for (const s of restingPen({ secs: 2 })) { letter = letter || seg.update({ ...s, t: (t += 0.01) }); }
   assert.ok(letter, 'letter ended');
   assert.ok(letter[letter.length - 1].t - letter[0].t < 1.4, `letter lasted ${(letter[letter.length - 1].t - letter[0].t).toFixed(2)} s`);
+});
+
+
+// ---- sensor fusion with a realistic wrist model ------------------------------
+// The pen is moved by rotating about a wrist pivot ~35 cm behind a virtual
+// board, and the sensor is stuck on the pen at an angle. Gyroscope and
+// accelerometer come from the same physical motion (plus offset and noise).
+const mat = (A, B) => A.map((row) => B[0].map((_, j) => row.reduce((acc, x, k) => acc + x * B[k][j], 0)));
+const T = (A) => A[0].map((_, j) => A.map((row) => row[j]));
+function wristWriting(path2d, { boardYaw = 20, dist = 0.35, mount = [0, 0, 90], offset = [0.02, -0.012, 0.015], hold = [30, 80], armShare = 0 } = {}) {
+  const fs = 100, g = 9.80665, D = Math.PI / 180;
+  let seed = 3;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 2;
+  const f = [Math.cos(boardYaw * D), Math.sin(boardYaw * D), 0], right = [f[1], -f[0], 0];
+  const pts = [...Array(hold[0]).fill(path2d[0]), ...path2d, ...Array(hold[1]).fill(path2d[path2d.length - 1])];
+  const pos = pts.map(([x, y]) => [0, 1, 2].map((k) => f[k] * dist + right[k] * x + (k === 2 ? y : 0)));
+  const Rm = rotationMatrix(mount);
+  // armShare: fraction of the movement made by the whole arm sliding (invisible to the gyroscope)
+  const pivots = pts.map(([x, y]) => [0, 1, 2].map((k) => armShare * (right[k] * x + (k === 2 ? y : 0))));
+  const Rs = pos.map((q0, i) => {
+    const q = q0.map((x, k) => x - pivots[i][k]);
+    const d = q.map((x) => x / Math.hypot(...q));
+    const Rpen = rotationMatrix([8 + 2 * Math.sin(i / 23), -Math.asin(d[2]) / D, Math.atan2(d[1], d[0]) / D]);
+    return mat(Rpen, Rm);
+  });
+  const euler = (R) => [Math.atan2(R[2][1], R[2][2]) / D, -Math.asin(R[2][0]) / D, Math.atan2(R[1][0], R[0][0]) / D];
+  const samples = pos.map((_, i) => {
+    const at = (j) => Math.min(pos.length - 1, Math.max(0, j));
+    const a = [0, 1, 2].map((k) => (pos[at(i + 1)][k] - 2 * pos[i][k] + pos[at(i - 1)][k]) * fs * fs);
+    const angle = euler(Rs[i]);
+    const R = rotationMatrix(angle);
+    const w = [a[0] / g, a[1] / g, a[2] / g + 1];
+    const acc = [0, 1, 2].map((c) => R[0][c] * w[0] + R[1][c] * w[1] + R[2][c] * w[2] + offset[c] + 0.004 * rnd());
+    const dR = Rs[at(i + 1)].map((row, r) => row.map((x, c) => (x - Rs[at(i - 1)][r][c]) * fs / 2));
+    const O = mat(T(Rs[i]), dR); // skew matrix of the body angular velocity
+    const gyro = [O[2][1], O[0][2], O[1][0]].map((x) => x / D + 0.3 * rnd());
+    return { t: 30 + i / fs, acc, gyro, angle };
+  });
+  const lever = mat(T(Rs[hold[0]]), pos[hold[0]].map((x, k) => [x - pivots[hold[0]][k]])).map((r) => r[0]);
+  return { samples, expected: pts.map(([x, y]) => [x, -y]), lever };
+}
+const ease5 = (n) => Array.from({ length: n }, (_, i) => { const u = (i + 1) / n; return 10 * u ** 3 - 15 * u ** 4 + 6 * u ** 5; });
+const wristCircle = () => ease5(110).map((e) => [0.06 * Math.sin(2 * Math.PI * e), 0.06 * Math.cos(2 * Math.PI * e) - 0.06]);
+const wristL = () => [...ease5(55).map((e) => [0, -0.12 * e]), ...ease5(45).map((e) => [0.08 * e, -0.12])];
+const wristN = () => [...ease5(45).map((e) => [0, 0.12 * e]), ...ease5(50).map((e) => [0.08 * e, 0.12 - 0.12 * e]), ...ease5(45).map((e) => [0.08, 0.12 * e])];
+
+test('circle calibration measures how rotation moves the pen (the lever)', () => {
+  const { samples, lever } = wristWriting(wristCircle());
+  const page = pageFromCircle(samples, { offset: restingOffset(samples.slice(0, 25)) });
+  assert.ok(page.lever, 'lever found');
+  const err = Math.hypot(...page.lever.map((x, k) => x - lever[k])) / Math.hypot(...lever);
+  console.log(`  lever error ${(err * 100).toFixed(1)}%, length ${(Math.hypot(...page.lever) * 100).toFixed(1)} cm (true ${(Math.hypot(...lever) * 100).toFixed(1)} cm)`);
+  assert.ok(err < 0.2, `lever off by ${(err * 100).toFixed(0)}%`);
+});
+
+for (const [name, shape] of [['L', wristL], ['N', wristN]]) {
+  test(`live drawing of "${name}" is already accurate before the pause (fusion with gyroscope)`, () => {
+    const cal = wristWriting(wristCircle());
+    const offset = restingOffset(cal.samples.slice(0, 25));
+    const page = pageFromCircle(cal.samples, { offset });
+    const { samples, expected } = wristWriting(shape());
+    const end = samples.length - 80; // the moment the stroke ends, before any pause is detected
+    const live = projectToPage(movementPath(samples.slice(0, end), { live: true, offset, lever: page.lever }), samples, page);
+    const noFusion = projectToPage(movementPath(samples.slice(0, end), { live: true, offset }), samples, page);
+    const sLive = similarity(live, expected.slice(0, end));
+    const sNoFusion = similarity(noFusion, expected.slice(0, end));
+    const cm = (a, b) => { const e = b.map((q) => [q[0] - b[0][0], q[1] - b[0][1]]); return 100 * Math.sqrt(a.reduce((acc, q, i) => acc + (q[0] - e[i][0]) ** 2 + (q[1] - e[i][1]) ** 2, 0) / a.length); };
+    const errLive = cm(live, expected.slice(0, end)), errNoFusion = cm(noFusion, expected.slice(0, end));
+    console.log(`  ${name}: live error with fusion ${errLive.toFixed(2)} cm | without ${errNoFusion.toFixed(2)} cm (letter is 12 cm tall)`);
+    assert.ok(errLive < 0.6 * errNoFusion, 'fusion should clearly beat no fusion');
+    assert.ok(errLive < 1.0, `live error ${errLive.toFixed(2)} cm`);
+    assert.ok(sLive > 0.95, `live with fusion ${sLive.toFixed(3)}`);
+    assert.ok(sLive > sNoFusion, `fusion ${sLive.toFixed(3)} vs without ${sNoFusion.toFixed(3)}`);
+    const final = projectToPage(movementPath(samples, { offset, lever: page.lever }), samples, page);
+    assert.ok(similarity(final, expected) > 0.96, `final ${similarity(final, expected).toFixed(3)}`);
+    // and the finished letter is a refinement of the live one, not a redraw
+    const shift = Math.max(...live.map((q, i) => Math.hypot(q[0] - final[i][0], q[1] - final[i][1])));
+    console.log(`  ${name}: final ${similarity(final, expected).toFixed(3)} | max live→final shift ${(shift * 100).toFixed(2)} cm`);
+    assert.ok(shift < 0.025, `final moved up to ${(shift * 100).toFixed(1)} cm from live`);
+  });
+}
+
+test('when half the movement comes from the arm (not the wrist), fusion still helps and never hurts', () => {
+  const opts = { armShare: 0.5 };
+  const cal = wristWriting(wristCircle(), opts);
+  const offset = restingOffset(cal.samples.slice(0, 25));
+  const page = pageFromCircle(cal.samples, { offset });
+  const { samples, expected } = wristWriting(wristN(), opts);
+  const end = samples.length - 80;
+  const cm = (a, b) => { const e = b.map((q) => [q[0] - b[0][0], q[1] - b[0][1]]); return 100 * Math.sqrt(a.reduce((acc, q, i) => acc + (q[0] - e[i][0]) ** 2 + (q[1] - e[i][1]) ** 2, 0) / a.length); };
+  const withF = cm(projectToPage(movementPath(samples.slice(0, end), { live: true, offset, lever: page.lever }), samples, page), expected.slice(0, end));
+  const without = cm(projectToPage(movementPath(samples.slice(0, end), { live: true, offset }), samples, page), expected.slice(0, end));
+  console.log(`  arm+wrist N: lever ${page.lever ? (Math.hypot(...page.lever) * 100).toFixed(1) + ' cm' : 'not found'} | live error with fusion ${withF.toFixed(2)} cm | without ${without.toFixed(2)} cm`);
+  assert.ok(withF <= without * 1.05, 'fusion must not make it worse');
 });
