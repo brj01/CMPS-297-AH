@@ -1,5 +1,5 @@
 import { Sensor, gestureRow } from './sensor.js';
-import { Segmenter, State, predictLetter, tracePoints, pageFromCircle, restingOffset } from './letters.js';
+import { Segmenter, State, predictLetter, tracePoints, pageFromCircle, restingOffset, stillGyroLimit } from './letters.js';
 import { GestureMode, GESTURES, GLYPHS, LABELS, loadGestureModel } from './gestures.js';
 import { Instruments } from './instruments.js';
 import { WatchLink } from './watch.js';
@@ -82,7 +82,7 @@ sensor.addEventListener('state', (e) => {
   const { state, detail } = e.detail;
   if (state !== 'live' && state !== 'demo') { segmenter.reset(); }
   if (state === 'demo' || state === 'live') instruments.clear();
-  if (state === 'connecting') { trace.page = null; trace.offset = null; if (calibration) endCalibration(); }
+  if (state === 'connecting') { trace.page = null; trace.offset = null; segmenter.stillGyro = 10; if (calibration) endCalibration(); }
   renderSensor(state, detail);
 });
 
@@ -141,7 +141,7 @@ const trace = {
     this.paper.dataset.hasTrace = String(samples.length > 1);
     if (samples.length < 2) return;
 
-    const { points: pts, pageWidth } = tracePoints(samples, { ...this.options, page: this.page, offset: this.offset, live: !final });
+    const { points: pts, pageWidth } = tracePoints(samples, { ...this.options, page: this.page, offset: this.offset, stillGyro: segmenter.stillGyro, live: !final });
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
     const left = 64 * dpr, pad = 28 * dpr;
@@ -254,30 +254,32 @@ function startCircleStep() {
   try {
     segmenter.calibrate(calibration.samples);
     trace.offset = restingOffset(calibration.samples);
+    segmenter.stillGyro = stillGyroLimit(calibration.samples); // how slow still counts as moving, for this sensor
   } catch (err) {
     endCalibration();
     setStatus('letters', 'error', err.message);
     return;
   }
   segmenter.reset();
-  calibration = { phase: 'circle' };
+  // The circle may be big and slow, so it gets its own detector with a 15 s limit.
+  calibration = { phase: 'circle', detector: new Segmenter({ start: segmenter.start, stop: segmenter.stop, stillGyro: segmenter.stillGyro, maxDuration: 15 }) };
   calibrateBtn.textContent = 'Skip circle';
   trace.draw([]);
-  setStatus('letters', 'calibrating', 'Step 2 of 2: draw one circle clockwise in front of you, about the size of a letter, then hold still.');
+  setStatus('letters', 'calibrating', 'Step 2 of 2: draw one circle clockwise in front of you, then hold still. Big and slow is fine; draw it the way you’ll write.');
 }
 
 function finishCircle(samples) {
   try {
-    trace.page = pageFromCircle(samples, { offset: trace.offset });
+    trace.page = pageFromCircle(samples, { offset: trace.offset, stillGyro: segmenter.stillGyro });
     trace.draw(samples, true);
     endCalibration();
     const fused = trace.page.lever
       ? 'The drawing now follows your pen as you write.'
-      : 'I couldn’t link your pen’s rotation to its movement, so the live drawing will be rougher until you pause. Try a quicker, wrist-driven circle to improve it.';
+      : 'I couldn’t link your pen’s rotation to its movement, so the live drawing will be rougher until you pause. Calibrate again, turning your wrist to draw the circle.';
     setStatus('letters', 'ready', `Calibrated: your circle was about ${Math.round(trace.page.size * 100)} cm across. ${fused}`);
   } catch (err) {
     trace.draw(samples, true);
-    segmenter.reset();
+    if (calibration && calibration.detector) calibration.detector.reset();
     setStatus('letters', 'error', `${err.message}, or press Skip circle.`);
   }
 }
@@ -330,10 +332,11 @@ function onLetterSample(s) {
     return;
   }
   if (calibration && calibration.phase === 'circle') {
-    const circle = segmenter.update(s);
-    if (segmenter.state === State.WRITING && !traceQueued) {
+    const det = calibration.detector;
+    const circle = det.update(s);
+    if (det.state === State.WRITING && !traceQueued) {
       traceQueued = true;
-      requestAnimationFrame(() => { traceQueued = false; if (segmenter.state === State.WRITING) trace.draw(segmenter.active); });
+      requestAnimationFrame(() => { traceQueued = false; if (calibration && det.state === State.WRITING) trace.draw(det.active); });
     }
     if (circle) finishCircle(circle);
     return;

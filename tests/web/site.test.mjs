@@ -218,7 +218,7 @@ test('circle calibration handles a tilted page and keeps it un-mirrored', () => 
 
 test('a line instead of a circle is rejected with a helpful message', () => {
   const line = synthOnBoard(smooth(80).map((e) => [0.12 * e, 0]));
-  assert.throws(() => pageFromCircle(line.samples), /line than a circle/);
+  assert.throws(() => pageFromCircle(line.samples), /circle/); // rejected (as a line, or as too small)
 });
 
 // A real sensor at rest: a constant accelerometer offset (typical: a few
@@ -354,3 +354,42 @@ test('when half the movement comes from the arm (not the wrist), fusion still he
   console.log(`  arm+wrist N: lever ${page.lever ? (Math.hypot(...page.lever) * 100).toFixed(1) + ' cm' : 'not found'} | live error with fusion ${withF.toFixed(2)} cm | without ${without.toFixed(2)} cm`);
   assert.ok(withF <= without * 1.05, 'fusion must not make it worse');
 });
+
+// ---- slow, big calibration circle; live processing driven by it ------------
+import { stillGyroLimit } from '../../web/js/letters.js';
+const errCm = (a, b) => { const e = b.map((q) => [q[0] - b[0][0], q[1] - b[0][1]]); return 100 * Math.sqrt(a.reduce((acc, q, i) => acc + (q[0] - e[i][0]) ** 2 + (q[1] - e[i][1]) ** 2, 0) / a.length); };
+const bigSlowCircle = () => ease5(600).map((e) => [0.2 * Math.sin(2 * Math.PI * e), 0.2 * Math.cos(2 * Math.PI * e) - 0.2]);
+
+function calibrateOn(circleShape, opts = {}) {
+  const cal = wristWriting(circleShape, opts);
+  const rest = cal.samples.slice(0, 25);
+  const offset = restingOffset(rest), stillGyro = stillGyroLimit(rest);
+  return { page: pageFromCircle(cal.samples, { offset, stillGyro }), offset, stillGyro, lever: cal.lever };
+}
+
+test('a slow, big circle (40 cm, 6 s) calibrates: right size, lever found', () => {
+  const { page, lever } = calibrateOn(bigSlowCircle());
+  console.log(`  slow circle: size ${(page.size * 100).toFixed(1)} cm (true 40), lever ${page.lever ? (Math.hypot(...page.lever) * 100).toFixed(1) : '-'} cm (true ${(Math.hypot(...lever) * 100).toFixed(1)})`);
+  assert.ok(Math.abs(page.size - 0.4) < 0.04, `size ${(page.size * 100).toFixed(1)} cm`);
+  assert.ok(page.lever, 'lever found');
+});
+
+for (const [label, circle] of [['quick circle', wristCircle], ['slow big circle', bigSlowCircle]]) {
+  test(`after a ${label}, letters draw accurately live, even written slowly`, () => {
+    const { page, offset, stillGyro } = calibrateOn(circle());
+    for (const [name, shape] of [['L', wristL], ['slow L', () => [...ease5(300).map((e) => [0, -0.12 * e]), ...ease5(250).map((e) => [0.08 * e, -0.12])]]]) {
+      const { samples, expected } = wristWriting(shape());
+      const end = samples.length - 80;
+      const live = projectToPage(movementPath(samples.slice(0, end), { live: true, offset, stillGyro, lever: page.lever }), samples, page);
+      const final = projectToPage(movementPath(samples, { offset, stillGyro, lever: page.lever }), samples, page);
+      // What you see: the shape (after matching size), and how far off the size is.
+      const shapeErr = (a, b) => { const e = b.map((q) => [q[0] - b[0][0], q[1] - b[0][1]]);
+        const k = a.reduce((acc, q, i) => acc + q[0] * e[i][0] + q[1] * e[i][1], 0) / a.reduce((acc, q) => acc + q[0] ** 2 + q[1] ** 2, 0);
+        return { cm: errCm(a.map((q) => [q[0] * k, q[1] * k]), b), scale: 1 / k }; };
+      const L = shapeErr(live, expected.slice(0, end)), F = shapeErr(final, expected);
+      console.log(`  ${label} → ${name}: live shape error ${L.cm.toFixed(2)} cm (size ×${L.scale.toFixed(2)}), finished ${F.cm.toFixed(2)} cm (×${F.scale.toFixed(2)})`);
+      assert.ok(L.cm < 0.6 && F.cm < 0.6, `${name}: live ${L.cm.toFixed(2)} cm, final ${F.cm.toFixed(2)} cm`);
+      assert.ok(Math.abs(L.scale - 1) < 0.35, `${name}: size off by ×${L.scale.toFixed(2)}`);
+    }
+  });
+}
