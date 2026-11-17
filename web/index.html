@@ -197,7 +197,7 @@
       <p>This only changes the drawing on the page, not which letter is recognised.</p>
       <fieldset class="choice">
         <legend>Draw from</legend>
-        <label class="check"><input type="radio" name="trace-method" value="movement"> <span><b>Pen movement</b><small>Where the pen actually went, worked out from its acceleration. Hold still before and after each letter.</small></span></label>
+        <label class="check"><input type="radio" name="trace-method" value="movement"> <span><b>Pen movement</b><small>Where the pen actually went, worked out from its acceleration. Pause briefly before and after each letter, and write on an imaginary board in front of you.</small></span></label>
         <label class="check"><input type="radio" name="trace-method" value="tilt"> <span><b>Pen tilt</b><small>How the pen turned. Steadier, but ignores sideways movement.</small></span></label>
       </fieldset>
       <fieldset class="choice">
@@ -206,7 +206,10 @@
       <label class="check"><input type="checkbox" id="opt-flipx"> Mirror left–right</label>
       <label class="check"><input type="checkbox" id="opt-flipy"> Flip upside down</label>
       </fieldset>
-      <div class="settings-actions"><button class="btn btn-solid" value="done">Done</button></div>
+      <div class="settings-actions">
+        <button class="btn btn-ghost" id="download-letter" type="button" disabled title="Saves the motion of the last letter you wrote, for troubleshooting">Download last letter’s data</button>
+        <button class="btn btn-solid" value="done">Done</button>
+      </div>
     </form>
   </dialog>
 </body>

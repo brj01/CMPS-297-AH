@@ -405,7 +405,7 @@ kbd { font: 500 11px var(--mono); color: var(--ink-3); border: 1px solid var(--s
 .choice .check input { margin-top: 2px; flex: none; }
 .choice .check span { display: grid; gap: 2px; }
 .choice .check small { color: var(--ink-2); font-size: 13.5px; line-height: 1.4; }
-.settings-actions { margin-top: 16px; display: flex; justify-content: flex-end; }
+.settings-actions { margin-top: 16px; display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 
 /* ---------- small screens ---------- */
 @media (max-width: 880px) {

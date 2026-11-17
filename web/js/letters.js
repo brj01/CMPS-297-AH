@@ -105,36 +105,61 @@ export function rotationMatrix([roll, pitch, yaw]) {
 const mul = (R, v) => R.map((row) => row[0] * v[0] + row[1] * v[1] + row[2] * v[2]);
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const unit = (v) => { const n = Math.hypot(...v) || 1; return v.map((x) => x / n); };
+
+const NOISE_FLOOR = 0.15; // m/s² (~0.015 g): smaller accelerations are treated as sensor noise
+
+function linearAcceleration(s) {
+  const a = mul(rotationMatrix(s.angle), s.acc);
+  const lin = [a[0] * G, a[1] * G, (a[2] - 1) * G];
+  const m = Math.hypot(...lin);
+  if (m <= NOISE_FLOOR) return [0, 0, 0];
+  const k = (m - NOISE_FLOOR) / m; // soft threshold: no jump at the noise floor
+  return lin.map((x) => x * k);
+}
+
+// Stretches of consecutive movement, ignoring 1–2 sample dropouts.
+function movingRuns(samples, still) {
+  const runs = [];
+  let start = -1, lastMoving = -10;
+  samples.forEach((s, i) => {
+    if (intensity(s) < still) return;
+    if (start < 0 || i - lastMoving > 3) { if (start >= 0) runs.push([start, lastMoving]); start = i; }
+    lastMoving = i;
+  });
+  if (start >= 0) runs.push([start, lastMoving]);
+  return runs;
+}
 
 // Pen position in metres (room coordinates, z up) for each sample.
-// Gravity is removed using the sensor's orientation, then acceleration is
-// integrated twice. The pen is assumed still before and after the stroke, so
-// any speed left over at the end is drift and is removed linearly over time;
-// that also cancels a constant accelerometer or tilt error exactly.
-export function movementPath(samples, { still = 0.8 } = {}) {
+// Gravity is removed using the sensor's orientation and the rest is integrated
+// twice. Whenever the pen is still, its speed is reset to zero. Each finished
+// stretch of movement must also end at zero speed, so speed left over at its
+// end is drift and is removed linearly over the stretch. With `live`, a
+// stretch still in progress is integrated forward only (with light damping),
+// so lines already on screen don't move while you write.
+export function movementPath(samples, { still = 0.8, live = false } = {}) {
   const n = samples.length;
-  const zero = samples.map(() => [0, 0, 0]);
-  if (n < 3) return zero;
-  const lin = samples.map((s) => { const a = mul(rotationMatrix(s.angle), s.acc); return [a[0] * G, a[1] * G, (a[2] - 1) * G]; });
-  const moving = samples.map((s) => intensity(s) >= still);
-  let i0 = moving.indexOf(true);
-  let i1 = moving.lastIndexOf(true);
-  if (i0 < 0 || i1 <= i0) return zero;
-  i0 = Math.max(0, i0 - 2);
-  i1 = Math.min(n - 1, i1 + 2);
-
-  const v = samples.map(() => [0, 0, 0]);
-  for (let i = i0 + 1; i <= i1; i++) {
-    const dt = samples[i].t - samples[i - 1].t;
-    for (let k = 0; k < 3; k++) v[i][k] = v[i - 1][k] + 0.5 * (lin[i][k] + lin[i - 1][k]) * dt;
-  }
-  const t0 = samples[i0].t, span = samples[i1].t - t0 || 1, vEnd = [...v[i1]];
-  for (let i = i0; i <= i1; i++) {
-    const f = (samples[i].t - t0) / span;
-    for (let k = 0; k < 3; k++) v[i][k] -= vEnd[k] * f;
-  }
   const p = samples.map(() => [0, 0, 0]);
+  if (n < 3) return p;
+  const lin = samples.map(linearAcceleration);
+  const v = samples.map(() => [0, 0, 0]);
+  for (const [r0, r1] of movingRuns(samples, still)) {
+    const a = Math.max(0, r0 - 2);
+    const open = live && r1 >= n - 2;
+    const b = open ? n - 1 : Math.min(n - 1, r1 + 2);
+    for (let i = a + 1; i <= b; i++) {
+      const dt = samples[i].t - samples[i - 1].t;
+      const damp = open ? Math.exp(-dt / 1.5) : 1;
+      for (let k = 0; k < 3; k++) v[i][k] = (v[i - 1][k] + 0.5 * (lin[i][k] + lin[i - 1][k]) * dt) * damp;
+    }
+    if (!open) {
+      const t0 = samples[a].t, span = samples[b].t - t0 || 1, end = [...v[b]];
+      for (let i = a; i <= b; i++) {
+        const f = (samples[i].t - t0) / span;
+        for (let k = 0; k < 3; k++) v[i][k] -= end[k] * f;
+      }
+    }
+  }
   for (let i = 1; i < n; i++) {
     const dt = samples[i].t - samples[i - 1].t;
     for (let k = 0; k < 3; k++) p[i][k] = p[i - 1][k] + 0.5 * (v[i][k] + v[i - 1][k]) * dt;
@@ -142,43 +167,30 @@ export function movementPath(samples, { still = 0.8 } = {}) {
   return p;
 }
 
-// Smallest-variance direction of a point cloud (the normal of the plane it
-// lies in), via Jacobi rotations on the 3×3 covariance matrix.
-function planeNormal(points) {
-  const c = [0, 1, 2].map((k) => points.reduce((s, p) => s + p[k], 0) / points.length);
-  const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
-  for (const p of points) for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) A[i][j] += (p[i] - c[i]) * (p[j] - c[j]);
-  const V = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
-  for (let sweep = 0; sweep < 20; sweep++) {
-    for (const [i, j] of [[0, 1], [0, 2], [1, 2]]) {
-      if (Math.abs(A[i][j]) < 1e-15) continue;
-      const th = 0.5 * Math.atan2(2 * A[i][j], A[j][j] - A[i][i]);
-      const [co, si] = [Math.cos(th), Math.sin(th)];
-      for (let k = 0; k < 3; k++) { const a = A[k][i], b = A[k][j]; A[k][i] = co * a - si * b; A[k][j] = si * a + co * b; }
-      for (let k = 0; k < 3; k++) { const a = A[i][k], b = A[j][k]; A[i][k] = co * a - si * b; A[j][k] = si * a + co * b; }
-      for (let k = 0; k < 3; k++) { const a = V[k][i], b = V[k][j]; V[k][i] = co * a - si * b; V[k][j] = si * a + co * b; }
+// Flattens the path onto an upright page, as seen by the writer. "Up" is
+// always up (from gravity), so the drawing can never tumble. "Right" is the
+// main horizontal direction of the first ~2 cm of sideways movement, then
+// stays locked; before that (or for letters like I) it is taken from the
+// pen's heading. The heading also decides which way is left, so a mirrored
+// result can be fixed with the Mirror setting.
+const LOCK_SPREAD = 0.02; // metres
+export function projectToPage(path, samples) {
+  const yaw = samples[0].angle[2] * DEG;
+  const forward = [Math.cos(yaw), Math.sin(yaw), 0];
+  let right = cross(forward, [0, 0, 1]);
+  let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+  for (let i = 0; i < path.length; i++) {
+    const [x, y] = path[i];
+    sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+    const n = i + 1, cxx = sxx / n - (sx / n) ** 2, cyy = syy / n - (sy / n) ** 2, cxy = sxy / n - (sx / n) * (sy / n);
+    if (n >= 10 && 2 * Math.sqrt(Math.max(cxx, cyy, 0)) >= LOCK_SPREAD) {
+      const angle = 0.5 * Math.atan2(2 * cxy, cxx - cyy);
+      const axis = [Math.cos(angle), Math.sin(angle), 0];
+      right = dot(axis, right) >= 0 ? axis : axis.map((c) => -c);
+      break;
     }
   }
-  const eig = [A[0][0], A[1][1], A[2][2]];
-  const order = [0, 1, 2].sort((a, b) => eig[a] - eig[b]);
-  return { normal: [V[0][order[0]], V[1][order[0]], V[2][order[0]]], flatness: eig[order[0]] / (eig[order[1]] || 1e-12) };
-}
-
-// Flattens the 3D path onto the plane it was written in, as seen by the writer.
-// "Forward" is where the pen pointed at the start (sensor x axis); if the page
-// comes out mirrored, the Mirror setting fixes it.
-export function projectToPage(path, samples) {
-  const up = [0, 0, 1];
-  const fwd0 = mul(rotationMatrix(samples[0].angle), [1, 0, 0]);
-  const forward = unit([fwd0[0], fwd0[1], 0]);
-  let { normal, flatness } = planeNormal(path);
-  if (!(flatness < 0.35)) normal = forward; // too straight to tell the plane: assume a board in front
-  if (dot(normal, forward) < 0) normal = normal.map((x) => -x);
-  let pageUp;
-  if (Math.abs(normal[2]) < 0.75) pageUp = unit(up.map((u, k) => u - normal[2] * normal[k])); // upright page
-  else pageUp = unit(forward.map((f, k) => f - dot(forward, normal) * normal[k]));           // flat page
-  const right = unit(cross(pageUp, normal.map((x) => -x)));
-  return path.map((p) => [dot(p, right), -dot(p, pageUp)]);
+  return path.map((q) => [dot(q, right), -q[2]]);
 }
 
 // Turn-based drawing: yaw moves left/right, pitch moves up/down. Yaw is
@@ -199,17 +211,17 @@ function tiltPoints(samples) {
   return pts;
 }
 
-// 2D points for drawing, plus the smallest span (in the points' units) worth
-// filling the page with, so tiny jitter isn't blown up to full size.
-export function tracePoints(samples, { method = 'movement', still = 0.8, swap = false, flipX = false, flipY = false } = {}) {
-  if (!samples.length) return { points: [], minSpan: 1 };
+// 2D points for drawing, plus how much the page width represents in the
+// points' units. The page has a fixed scale, so strokes keep their size.
+export function tracePoints(samples, { method = 'movement', still = 0.8, live = false, swap = false, flipX = false, flipY = false } = {}) {
+  if (!samples.length) return { points: [], pageWidth: 1 };
   const movement = method === 'movement';
-  const raw = movement ? projectToPage(movementPath(samples, { still }), samples) : tiltPoints(samples);
+  const raw = movement ? projectToPage(movementPath(samples, { still, live }), samples) : tiltPoints(samples);
   const points = raw.map(([x0, y0]) => {
     let [x, y] = swap ? [y0, x0] : [x0, y0];
     if (flipX) x = -x;
     if (flipY) y = -y;
     return [x, y];
   });
-  return { points, minSpan: movement ? 0.04 : 25 }; // 4 cm or 25°
+  return { points, pageWidth: movement ? 0.3 : 70 }; // 30 cm, or 70° of turn
 }

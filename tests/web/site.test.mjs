@@ -139,3 +139,35 @@ test('a single straight stroke (like "I") still draws as a vertical line', () =>
   const page = projectToPage(movementPath(samples), samples);
   assert.ok(similarity(page, expected) > 0.97);
 });
+
+test('a pen held still with sensor noise and hand tremor barely moves on the page', () => {
+  let seed = 7;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5) * 2; // repeatable noise in [-1, 1]
+  const samples = Array.from({ length: 300 }, (_, i) => {
+    const angle = [2 + 0.3 * rnd(), -12 + 0.3 * rnd(), 50 + 0.3 * rnd()];
+    const R = rotationMatrix(angle);
+    const body = [0, 1, 2].map((c) => R[2][c] + 0.012 * rnd()); // gravity + ~0.01 g noise
+    return { t: i / 100, acc: body, gyro: [2.5 * rnd(), 2.5 * rnd(), 1.5 * rnd()], angle }; // tremor around the threshold
+  });
+  const page = projectToPage(movementPath(samples), samples);
+  const extent = Math.max(...page.map((p) => Math.hypot(p[0], p[1])));
+  assert.ok(extent < 0.01, `moved ${(extent * 100).toFixed(2)} cm`);
+});
+
+test('while writing, lines already drawn stay where they are', () => {
+  const { samples } = synthLetter({ strokes: [[0.1, -0.05, 1.2]] });
+  const early = samples.slice(0, 30 + 80), later = samples.slice(0, 30 + 100); // both mid-stroke
+  const a = projectToPage(movementPath(early, { live: true }), early);
+  const b = projectToPage(movementPath(later, { live: true }), later);
+  const maxShift = Math.max(...a.map((p, i) => Math.hypot(p[0] - b[i][0], p[1] - b[i][1])));
+  assert.ok(maxShift < 1e-9, `shifted ${maxShift}`);
+});
+
+test('up on the page is always up in the room, whatever the heading', () => {
+  for (const yaw of [-150, -40, 0, 75, 170]) {
+    const { samples, expected } = synthLetter({ yaw, strokes: [[0, -0.1, 0.5], [0.06, 0, 0.4]] });
+    const page = projectToPage(movementPath(samples), samples);
+    const s = similarity(page, expected);
+    assert.ok(s > 0.95, `yaw ${yaw}: similarity ${s.toFixed(3)}`);
+  }
+});

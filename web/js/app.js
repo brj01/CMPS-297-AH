@@ -138,15 +138,24 @@ const trace = {
     this.paper.dataset.hasTrace = String(samples.length > 1);
     if (samples.length < 2) return;
 
-    const { points: pts, minSpan } = tracePoints(samples, { ...this.options, still: segmenter.stop });
+    const { points: pts, pageWidth } = tracePoints(samples, { ...this.options, still: segmenter.stop, live: !final });
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-    const left = 64 * dpr, pad = 36 * dpr;
+    const left = 64 * dpr, pad = 28 * dpr;
     const w = c.width - left - pad, h = c.height - 2 * pad;
-    const span = Math.max(maxX - minX, maxY - minY, minSpan); // keeps tiny jitter from filling the page
-    const scale = Math.min(w, h) / span;
-    const ox = left + (w - (maxX - minX) * scale) / 2 - minX * scale;
-    const oy = pad + (h - (maxY - minY) * scale) / 2 - minY * scale;
+    // Fixed scale: the page always shows the same real size, so strokes keep
+    // their size and small jitter stays small. Only zoom out if it won't fit.
+    const scale = Math.min(w / pageWidth, w / Math.max(maxX - minX, 1e-9), h / Math.max(maxY - minY, 1e-9));
+    // While writing, the stroke starts at a fixed spot and the view only pans
+    // if the stroke would leave the page. The finished letter is centred.
+    const fit = (lo, hi, start, size, anchor, offset) => {
+      let o = final ? offset + (size - (hi - lo) * scale) / 2 - lo * scale : offset + anchor * size - start * scale;
+      o = Math.max(o, offset - lo * scale);                 // keep inside the left/top edge
+      o = Math.min(o, offset + size - hi * scale);          // and the right/bottom edge
+      return o;
+    };
+    const ox = fit(minX, maxX, pts[0][0], w, 0.38, left);
+    const oy = fit(minY, maxY, pts[0][1], h, 0.3, pad);
     const at = (p) => [ox + p[0] * scale, oy + p[1] * scale];
 
     const path = new Path2D();
@@ -179,6 +188,16 @@ document.querySelectorAll('input[name="trace-method"]').forEach((radio) => {
   radio.addEventListener('change', () => { trace.options.method = radio.value; store.set('airwrite.trace', trace.options); trace.resize(); });
 });
 $('open-settings').addEventListener('click', () => settings.showModal());
+$('download-letter').addEventListener('click', () => {
+  if (!lastLetter) return;
+  const data = { sensor: sensor.name, units: { t: 's', acc: 'g', gyro: 'deg/s', angle: 'deg (roll, pitch, yaw)' },
+    thresholds: { start: segmenter.start, stop: segmenter.stop }, samples: lastLetter };
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  a.download = `airwrite-letter-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
 
 /* ---------------------------------------------------------------- letters */
 
@@ -188,6 +207,7 @@ let reading = false;
 let wasWriting = false;
 let traceQueued = false;
 let text = store.get('airwrite.text', '');
+let lastLetter = null;
 
 function refreshLettersStatus() {
   if (calibration || reading) return;
@@ -282,7 +302,7 @@ function onLetterSample(s) {
     traceQueued = true;
     requestAnimationFrame(() => { traceQueued = false; if (segmenter.state === State.WRITING) trace.draw(segmenter.active); });
   }
-  if (letter) { wasWriting = false; readLetter(letter); }
+  if (letter) { wasWriting = false; lastLetter = letter; $('download-letter').disabled = false; readLetter(letter); }
 }
 
 function renderText() {
