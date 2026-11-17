@@ -269,6 +269,8 @@ function startCircleStep() {
 }
 
 function finishCircle(samples) {
+  lastLetter = samples; // so the circle can be downloaded too, for troubleshooting
+  $('download-letter').disabled = false;
   try {
     trace.page = pageFromCircle(samples, { offset: trace.offset, stillGyro: segmenter.stillGyro });
     trace.draw(samples, true);
