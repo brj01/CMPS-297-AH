@@ -393,3 +393,33 @@ for (const [label, circle] of [['quick circle', wristCircle], ['slow big circle'
     }
   });
 }
+
+// ---- experimental: strokes vs repositioning ----------------------------------
+import { strokeMask } from '../../web/js/letters.js';
+
+test('strokes vs repositioning: quick strokes are ink, the slow move between them is not', () => {
+  // An "A": quick stroke up-right, quick stroke down-right, slow move back to
+  // the left side, quick crossbar. Page coordinates in metres, 100 Hz.
+  const pts = [], times = [];
+  const go = (dx, dy, secs) => {
+    const [x0, y0] = pts.length ? pts[pts.length - 1] : [0, 0];
+    const n = Math.round(secs * 100);
+    for (let i = 1; i <= n; i++) { const e = 10 * (i / n) ** 3 - 15 * (i / n) ** 4 + 6 * (i / n) ** 5; pts.push([x0 + dx * e, y0 + dy * e]); times.push(pts.length / 100); }
+  };
+  pts.push([0, 0]); times.push(0);
+  go(0.05, -0.12, 0.35); const up = pts.length;
+  go(0.05, 0.12, 0.35); const down = pts.length;
+  go(-0.075, -0.06, 1.2); const back = pts.length; // slow reposition
+  go(0.05, 0, 0.3);
+  const mask = strokeMask(pts, times);
+  const share = (a, b) => mask.slice(a, b).filter(Boolean).length / (b - a);
+  assert.ok(share(5, up - 5) > 0.7, 'first stroke is ink');
+  assert.ok(share(up + 5, down - 5) > 0.7, 'second stroke is ink');
+  assert.ok(share(down + 10, back - 10) < 0.1, 'repositioning is faint');
+  assert.ok(share(back + 5, pts.length - 5) > 0.7, 'crossbar is ink');
+});
+
+test('strokes vs repositioning: a letter written at an even speed is all ink', () => {
+  const pts = Array.from({ length: 120 }, (_, i) => [0.001 * i, 0]), times = pts.map((_, i) => i / 100);
+  assert.ok(strokeMask(pts, times).slice(5, -5).every(Boolean));
+});
