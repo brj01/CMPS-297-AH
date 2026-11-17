@@ -1,5 +1,5 @@
 import { Sensor, gestureRow } from './sensor.js';
-import { Segmenter, State, predictLetter, tracePoints, pageFromCircle, restingOffset, stillGyroLimit } from './letters.js';
+import { Segmenter, State, predictLetter, tracePoints, pageFromCircle, restingOffset, stillGyroLimit, stillMask } from './letters.js';
 import { GestureMode, GESTURES, GLYPHS, LABELS, loadGestureModel } from './gestures.js';
 import { Instruments } from './instruments.js';
 import { WatchLink } from './watch.js';
@@ -80,7 +80,7 @@ function renderSensor(state, detail = '') {
 
 sensor.addEventListener('state', (e) => {
   const { state, detail } = e.detail;
-  if (state !== 'live' && state !== 'demo') { segmenter.reset(); }
+  if (state !== 'live' && state !== 'demo') { segmenter.reset(); recenter = null; }
   if (state === 'demo' || state === 'live') instruments.clear();
   if (state === 'connecting') { trace.page = null; trace.offset = null; segmenter.stillGyro = 10; if (calibration) endCalibration(); }
   renderSensor(state, detail);
@@ -207,9 +207,44 @@ let wasWriting = false;
 let traceQueued = false;
 let text = store.get('airwrite.text', '');
 let lastLetter = null;
+// After each letter: a moment to bring the pen back, then hold still to start the next.
+let recenter = null; // { until, outcome, state, window, lastText }
+let recenterSeconds = Number(store.get('airwrite.recenter', 1.5));
+const recenterSelect = $('opt-recenter');
+recenterSelect.value = String(recenterSeconds);
+if (recenterSelect.value !== String(recenterSeconds)) { recenterSeconds = 1.5; recenterSelect.value = '1.5'; }
+recenterSelect.addEventListener('change', () => { recenterSeconds = Number(recenterSelect.value); store.set('airwrite.recenter', recenterSeconds); });
+
+function startRecenter(state, outcome) {
+  segmenter.reset();
+  if (!recenterSeconds) { recenter = null; setStatus('letters', state, `${outcome} Write the next letter.`.trim()); return; }
+  recenter = { until: performance.now() + recenterSeconds * 1000, outcome, state, window: [], lastText: '' };
+  setStatus('letters', state, `${outcome} Bring the pen back… ${recenterSeconds.toFixed(1)} s`.trim());
+}
+
+// Returns true while the pause between letters is still going (the sample is ignored).
+function recentering(s) {
+  if (!recenter) return false;
+  const r = recenter;
+  r.window.push(s);
+  if (r.window.length > 10) r.window.shift();
+  const left = (r.until - performance.now()) / 1000;
+  let text;
+  if (left > 0) text = `${r.outcome} Bring the pen back… ${left.toFixed(1)} s`;
+  else if (!(r.window.length === 10 && stillMask(r.window, segmenter.stillGyro)[9])) text = `${r.outcome} Hold still to start the next letter.`;
+  else {
+    recenter = null;
+    segmenter.reset();
+    setStatus('letters', 'ready', 'Ready. Write the next letter.');
+    return true; // this sample was still; writing can start from the next one
+  }
+  text = text.trim();
+  if (text !== r.lastText) { r.lastText = text; setStatus('letters', r.state, text); }
+  return true;
+}
 
 function refreshLettersStatus() {
-  if (calibration || reading) return;
+  if (calibration || reading || recenter) return;
   if (sensor.state === 'demo') return setStatus('letters', 'idle', 'The sample recording only has gestures. Connect your sensor to write letters.');
   if (sensor.state !== 'live') return setStatus('letters', 'idle', sensor.state === 'reconnecting' ? 'Reconnecting to the sensor…' : 'Connect your sensor to start.');
   if (!listening) return setStatus('letters', 'paused', 'Paused. Movements are ignored until you resume.');
@@ -220,6 +255,7 @@ function refreshLettersStatus() {
 
 $('listen-toggle').addEventListener('click', (e) => {
   listening = !listening;
+  recenter = null;
   segmenter.reset();
   e.currentTarget.textContent = listening ? 'Pause' : 'Resume';
   e.currentTarget.setAttribute('aria-pressed', String(!listening));
@@ -245,6 +281,7 @@ calibrateBtn.addEventListener('click', () => {
   }
   if (sensor.state !== 'live') { setStatus('letters', 'error', 'Connect your sensor first, then calibrate.'); return; }
   segmenter.reset();
+  recenter = null;
   calibration = { phase: 'still', samples: [], started: performance.now() };
   calibrateBtn.textContent = 'Cancel';
   setStatus('letters', 'calibrating', 'Step 1 of 2: hold the pen completely still…');
@@ -305,24 +342,24 @@ function showLetter(result) {
 async function readLetter(samples) {
   trace.draw(samples, true);
   if (lettersHealth.state !== 'ready') {
-    segmenter.reset();
-    refreshLettersStatus();
+    startRecenter('error', 'Letter recognition isn’t available on this server right now.');
     return;
   }
   reading = true;
   setStatus('letters', 'reading', 'Reading your letter…');
+  let state = 'paused', outcome;
   try {
     const result = await predictLetter(samples, { watchCode: watch.code });
     showLetter(result);
     if (result.accepted && result.letter) { text += result.letter; renderText(); }
-    reading = false;
-    setStatus('letters', 'ready', result.accepted ? 'Got it. Write the next letter.' : 'Not sure about that one. Try writing it again.');
+    outcome = result.accepted ? 'Got it.' : 'Not sure about that one, try it again.';
   } catch (err) {
-    reading = false;
-    setStatus('letters', 'error', `Couldn’t read that letter: ${err.message}. Try again.`);
-  } finally {
-    segmenter.reset();
+    state = 'error';
+    outcome = `Couldn’t read that letter: ${err.message}.`;
   }
+  reading = false;
+  if (listening && sensor.state === 'live') startRecenter(state, outcome);
+  else { segmenter.reset(); refreshLettersStatus(); }
 }
 
 function onLetterSample(s) {
@@ -344,6 +381,7 @@ function onLetterSample(s) {
     return;
   }
   if (!listening || reading) return;
+  if (recentering(s)) return;
   const letter = segmenter.update(s);
   const writing = segmenter.state === State.WRITING;
   if (writing && !wasWriting) setStatus('letters', 'writing', 'Writing…');

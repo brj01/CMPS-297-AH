@@ -407,6 +407,13 @@ kbd { font: 500 11px var(--mono); color: var(--ink-3); border: 1px solid var(--s
 .choice .check input { margin-top: 2px; flex: none; }
 .choice .check span { display: grid; gap: 2px; }
 .choice .check small { color: var(--ink-2); font-size: 13.5px; line-height: 1.4; }
+.choice-note { margin: 0 0 4px !important; font-size: 13.5px !important; }
+.select-row { justify-content: space-between; gap: 16px; }
+.select-row select {
+  flex: none; font: 600 14px var(--body); color: var(--ink); background: var(--sheet);
+  border: 1.5px solid var(--sheet-edge); border-radius: 10px; padding: 7px 10px; cursor: pointer;
+}
+.select-row select:focus-visible { outline: 3px solid var(--pink); outline-offset: 2px; }
 .settings-actions { margin-top: 16px; display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 
 /* ---------- small screens ---------- */
