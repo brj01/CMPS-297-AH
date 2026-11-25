@@ -1,7 +1,9 @@
-import math
+import base64
+import io
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image, ImageDraw
 
 import web_app
 
@@ -14,9 +16,12 @@ def client(monkeypatch):
         yield c
 
 
-def letter(n=60):
-    return [{"t": 100 + i * 0.01, "acc": [0.1 * math.sin(i / 5), 0, 1], "gyro": [80 * math.sin(i / 5), 20, 0],
-             "orientation": [5 * math.sin(i / 5), 2, i * 0.2]} for i in range(n)]
+def png_data_url():
+    image = Image.new("RGB", (64, 64), "black")
+    ImageDraw.Draw(image).line((14, 12, 14, 50, 42, 50), fill="white", width=6)
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(output.getvalue()).decode("ascii")
 
 
 def test_page_and_gesture_files_are_served(client):
@@ -39,45 +44,37 @@ def test_training_data_and_old_demo_are_not_served(client):
 def test_predict_is_refused_while_model_unavailable(client, monkeypatch):
     monkeypatch.setitem(web_app.letters_status, "state", "unavailable")
     assert client.get("/api/health").json()["letters"]["state"] == "unavailable"
-    assert client.post("/api/letters/predict", json={"samples": letter()}).status_code == 503
+    assert client.post("/api/letters/predict", json={"image": png_data_url()}).status_code == 503
 
 
 def test_predict_validates_input(client, monkeypatch):
     monkeypatch.setitem(web_app.letters_status, "state", "ready")
-    assert client.post("/api/letters/predict", json={"samples": letter(1)}).status_code == 422
-    bad = letter()
-    bad[3]["gyro"] = [1, 2]
-    assert client.post("/api/letters/predict", json={"samples": bad}).status_code == 422
-    assert client.post("/api/letters/predict", json={"samples": letter(web_app.MAX_SAMPLES + 1)}).status_code == 422
+    assert client.post("/api/letters/predict", json={"image": "not a png"}).status_code == 422
+    assert client.post("/api/letters/predict", json={"image": png_data_url(), "mode": "latin"}).status_code == 422
 
 
-def test_predict_passes_samples_to_classifier(client, monkeypatch):
+def test_predict_passes_png_and_mode_to_classifier(client, monkeypatch):
     seen = {}
 
-    def fake_predict(samples, threshold, mode):
-        seen.update(samples=samples, mode=mode)
-        return {"letter": "L", "accepted": True, "confidence": 0.8, "latency_ms": 3.0,
-                "top3": [{"class_id": 11, "letter": "L", "score": 0.8},
-                         {"class_id": 8, "letter": "I", "score": 0.4},
-                         {"class_id": 4, "letter": "E", "score": 0.2}]}
+    def fake_predict(image, mode):
+        seen.update(image=image, mode=mode)
+        return {
+            "prediction": "ب", "class_id": 27, "mode": mode, "score": 0.8,
+            "top3": [{"character": "ب", "class_id": 27, "score": 0.8}],
+            "inference_ms": 3.0, "model": "airwrite-multilingual-74",
+            "score_normalization": "original model probabilities", "preview_png": b"png",
+        }
 
     monkeypatch.setitem(web_app.letters_status, "state", "ready")
-    monkeypatch.setattr(web_app.classifier, "predict_samples", fake_predict)
-    res = client.post("/api/letters/predict", json={"samples": letter()})
+    monkeypatch.setattr(web_app.image_classifier, "predict_png", fake_predict)
+    data_url = png_data_url()
+    res = client.post("/api/letters/predict", json={"image": data_url, "mode": "arabic"})
     assert res.status_code == 200
     body = res.json()
-    assert body["letter"] == "L" and [t["letter"] for t in body["top3"]] == ["L", "I", "E"]
-    first = seen["samples"]["pen"][0]
-    assert seen["mode"] == "auto" and "watch" not in seen["samples"] and set(first) == {"timestamp", "acc", "gyro", "orientation"}
-
-
-def fake_classifier(monkeypatch, seen):
-    def predict(samples, threshold, mode):
-        seen.append({"sensors": sorted(samples), "mode": mode, "watch": samples.get("watch")})
-        return {"letter": "A", "accepted": True, "confidence": 0.7, "latency_ms": 1.0,
-                "top3": [{"class_id": 0, "letter": "A", "score": 0.7}]}
-    monkeypatch.setitem(web_app.letters_status, "state", "ready")
-    monkeypatch.setattr(web_app.classifier, "predict_samples", predict)
+    assert body["prediction"] == "ب" and body["top3"][0]["character"] == "ب"
+    assert seen["image"] == web_app.decode_png_data_url(data_url)
+    assert seen["mode"] == "arabic"
+    assert body["preview"].startswith("data:image/png;base64,")
 
 
 def watch_payload(t, motion=True):
@@ -108,40 +105,14 @@ def test_status_flags_payloads_without_motion_values(client):
     assert client.get(f"/api/watch/{code}/status").json()["motion_fields"] is False
 
 
-def test_letter_uses_watch_samples_from_the_same_moment(client, monkeypatch):
-    seen = []
-    fake_classifier(monkeypatch, seen)
+def test_watch_pairing_and_status(client):
     code = client.post("/api/watch/pair").json()["code"]
-    # letter() spans t = 100.00 .. 100.59; watch samples before, during and long after it
-    client.post(f"/api/watch/{code}", json=[watch_payload(t) for t in (90.0, 100.1, 100.3, 100.5, 120.0)])
-    body = client.post("/api/letters/predict", json={"samples": letter(), "watch_code": code}).json()
-    assert body["used_watch"] is True
-    assert seen[-1]["sensors"] == ["pen", "watch"] and seen[-1]["mode"] == "auto"
-    assert [s["timestamp"] for s in seen[-1]["watch"]] == [100.1, 100.3, 100.5]
-
-
-def test_letter_falls_back_to_pen_without_matching_watch_data(client, monkeypatch):
-    seen = []
-    fake_classifier(monkeypatch, seen)
-    code = client.post("/api/watch/pair").json()["code"]
-    client.post(f"/api/watch/{code}", json=[watch_payload(t) for t in (10.0, 11.0)])
-    for watch_code in (code, "GONE99"):
-        body = client.post("/api/letters/predict", json={"samples": letter(), "watch_code": watch_code}).json()
-        assert body["used_watch"] is False and seen[-1]["sensors"] == ["pen"]
-
-
-def test_unusable_watch_data_does_not_cost_the_letter(client, monkeypatch):
-    calls = []
-    def predict(samples, threshold, mode):
-        calls.append(sorted(samples))
-        if "watch" in samples:
-            raise ValueError("Sensor timestamps must be strictly increasing")
-        return {"letter": "B", "accepted": True, "confidence": 0.6, "latency_ms": 1.0,
-                "top3": [{"class_id": 1, "letter": "B", "score": 0.6}]}
-    monkeypatch.setitem(web_app.letters_status, "state", "ready")
-    monkeypatch.setattr(web_app.classifier, "predict_samples", predict)
-    code = client.post("/api/watch/pair").json()["code"]
-    client.post(f"/api/watch/{code}", json=[watch_payload(100.2), watch_payload(100.2)])
-    body = client.post("/api/letters/predict", json={"samples": letter(), "watch_code": code}).json()
-    assert body["letter"] == "B" and body["used_watch"] is False
-    assert calls == [["pen", "watch"], ["pen"]]
+    assert len(code) == 6
+    assert client.get(f"/api/watch/{code}/status").json()["receiving"] is False
+    client.post(f"/api/watch/{code}", json=[watch_payload(100.0 + i / 50) for i in range(10)])
+    status = client.get(f"/api/watch/{code}/status").json()
+    assert status["receiving"] and status["samples"] == 10 and status["motion_fields"]
+    assert client.post("/api/watch/NOPE00", json=watch_payload(1)).status_code == 404
+    assert client.post(f"/api/watch/{code}", json=[1, 2]).status_code == 422
+    client.delete(f"/api/watch/{code}")
+    assert client.get(f"/api/watch/{code}/status").status_code == 404

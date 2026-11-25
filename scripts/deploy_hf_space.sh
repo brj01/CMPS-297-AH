@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+okay #!/usr/bin/env bash
 # Deploys the AirWrite website to a Hugging Face Space (Docker).
 # Usage: scripts/deploy_hf_space.sh <hf-username>/<space-name>
 # Needs: the Space created on huggingface.co (SDK: Docker), and `hf auth login`.
@@ -6,7 +6,22 @@ set -euo pipefail
 
 SPACE="${1:?usage: scripts/deploy_hf_space.sh <hf-username>/<space-name>}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HF="${HF:-$(command -v hf || echo "$ROOT/.venv/bin/hf")}"
+HF="${HF:-}"
+if [[ -z "$HF" ]]; then
+  HF="$(command -v hf || true)"
+fi
+if [[ -z "$HF" ]]; then
+  for candidate in "$ROOT/.venv/Scripts/hf.exe" "$ROOT/.venv/bin/hf"; do
+    if [[ -x "$candidate" ]]; then
+      HF="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$HF" ]]; then
+  echo "Hugging Face CLI not found. Install requirements-web.txt or set HF to its executable." >&2
+  exit 1
+fi
 BUILD="$(mktemp -d)"
 trap 'rm -rf "$BUILD"' EXIT
 

@@ -10,3 +10,5 @@ python-dotenv>=1.0
 joblib>=1.4
 # The letters model was saved with scikit-learn 1.6.1; other versions warn and may differ.
 scikit-learn==1.6.1
+Pillow>=10.0
+tensorflow==2.21.0

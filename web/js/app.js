@@ -1,5 +1,5 @@
 import { Sensor, gestureRow } from './sensor.js';
-import { Segmenter, State, predictLetter, tracePoints, pageFromCircle, restingOffset, stillGyroLimit, stillMask } from './letters.js';
+import { Segmenter, State, predictLetterImage, tracePoints, pageFromCircle, restingOffset, stillGyroLimit, stillMask } from './letters.js';
 import { GestureMode, GESTURES, GLYPHS, LABELS, loadGestureModel } from './gestures.js';
 import { Instruments } from './instruments.js';
 import { WatchLink } from './watch.js';
@@ -138,10 +138,14 @@ const trace = {
     c.height = Math.max(1, Math.round(box.height * dpr));
     const ctx = c.getContext('2d');
     ctx.clearRect(0, 0, c.width, c.height);
-    this.paper.dataset.hasTrace = String(samples.length > 1);
-    if (samples.length < 2) return;
-
-    const { points: pts, pageWidth } = tracePoints(samples, { ...this.options, page: this.page, offset: this.offset, stillGyro: segmenter.stillGyro, live: !final });
+    const strokes = samples.length && Array.isArray(samples[0]) ? samples : samples.length ? [samples] : [];
+    const projected = strokes.filter((stroke) => stroke.length > 1).map((stroke) =>
+      tracePoints(stroke, { ...this.options, page: this.page, offset: this.offset, stillGyro: segmenter.stillGyro, live: !final }));
+    this.paper.dataset.hasTrace = String(projected.length > 0);
+    if (!projected.length) return;
+    const pts = projected.flatMap((stroke) => stroke.points);
+    const first = projected[0].points[0];
+    const pageWidth = Math.max(...projected.map((stroke) => stroke.pageWidth));
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
     const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
     const left = 64 * dpr, pad = 28 * dpr;
@@ -157,25 +161,30 @@ const trace = {
       o = Math.min(o, offset + size - hi * scale);          // and the right/bottom edge
       return o;
     };
-    const ox = fit(minX, maxX, pts[0][0], w, 0.38, left);
-    const oy = fit(minY, maxY, pts[0][1], h, 0.3, pad);
+    const ox = fit(minX, maxX, first[0], w, 0.38, left);
+    const oy = fit(minY, maxY, first[1], h, 0.3, pad);
     const at = (p) => [ox + p[0] * scale, oy + p[1] * scale];
 
-    const path = new Path2D();
-    pts.forEach((p, i) => { const [x, y] = at(p); if (i) path.lineTo(x, y); else path.moveTo(x, y); });
+    const paths = projected.map(({ points }) => {
+      const path = new Path2D();
+      points.forEach((p, i) => { const [x, y] = at(p); if (i) path.lineTo(x, y); else path.moveTo(x, y); });
+      return path;
+    });
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = cssVar('--pink');
     ctx.globalAlpha = final ? 0.9 : 0.6;
     ctx.lineWidth = 16 * dpr;
-    ctx.stroke(path);
+    paths.forEach((path) => ctx.stroke(path));
     ctx.globalAlpha = 1;
     ctx.strokeStyle = cssVar('--plum');
     ctx.lineWidth = 5 * dpr;
-    ctx.stroke(path);
-    const [sx, sy] = at(pts[0]);
+    paths.forEach((path) => ctx.stroke(path));
     ctx.fillStyle = cssVar('--rose');
-    ctx.beginPath(); ctx.arc(sx, sy, 6 * dpr, 0, Math.PI * 2); ctx.fill();
+    projected.forEach(({ points }) => {
+      const [sx, sy] = at(points[0]);
+      ctx.beginPath(); ctx.arc(sx, sy, 6 * dpr, 0, Math.PI * 2); ctx.fill();
+    });
   },
 };
 window.addEventListener('resize', () => trace.resize());
@@ -190,7 +199,7 @@ $('open-settings').addEventListener('click', () => settings.showModal());
 $('download-letter').addEventListener('click', () => {
   if (!lastLetter) return;
   const data = { sensor: sensor.name, units: { t: 's', acc: 'g', gyro: 'deg/s', angle: 'deg (roll, pitch, yaw)' },
-    thresholds: { start: segmenter.start, stop: segmenter.stop }, samples: lastLetter };
+    thresholds: { start: segmenter.start, stop: segmenter.stop }, samples: lastLetter, strokes: lastStrokes };
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
   a.download = `airwrite-letter-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -207,6 +216,22 @@ let wasWriting = false;
 let traceQueued = false;
 let text = store.get('airwrite.text', '');
 let lastLetter = null;
+let lastStrokes = [];
+let pendingStrokes = [];
+let recognitionTimer = null;
+let recognitionDelay = Number(store.get('airwrite.recognition-delay', 2));
+const modeSelect = $('recognition-mode');
+modeSelect.value = store.get('airwrite.recognition-mode', 'auto');
+if (!modeSelect.value) modeSelect.value = 'auto';
+modeSelect.addEventListener('change', () => store.set('airwrite.recognition-mode', modeSelect.value));
+const delaySelect = $('recognition-delay');
+delaySelect.value = String(recognitionDelay);
+if (delaySelect.value !== String(recognitionDelay)) { recognitionDelay = 2; delaySelect.value = '2'; }
+delaySelect.addEventListener('change', () => {
+  recognitionDelay = Number(delaySelect.value);
+  store.set('airwrite.recognition-delay', recognitionDelay);
+  if (pendingStrokes.length) scheduleStrokeRecognition();
+});
 // After each letter: a moment to bring the pen back, then hold still to start the next.
 let recenter = null; // { until, outcome, state, window, lastText }
 let recenterSeconds = Number(store.get('airwrite.recenter', 1.5));
@@ -323,44 +348,114 @@ function finishCircle(samples) {
   }
 }
 
-function showLetter(result) {
-  const el = $('letter');
-  el.textContent = result.letter || (result.top3 && result.top3[0] ? result.top3[0].letter : '?');
-  el.dataset.empty = 'false';
-  el.style.opacity = result.accepted ? '1' : '0.45';
-  el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop');
-  const score = Number(result.confidence || 0).toFixed(2);
-  const using = result.used_watch ? ' · pen + watch' : '';
-  $('letter-meta').innerHTML = result.accepted
-    ? `Match score <b>${score}</b>${using}`
-    : `Low match score <b>${score}</b>, so it wasn’t added${using}`;
-  const alts = (result.top3 || []).slice(1).map((t) => t.letter).filter(Boolean);
-  $('letter-alts').hidden = !alts.length;
-  $('letter-alts-list').replaceChildren(...alts.map((l) => Object.assign(document.createElement('span'), { textContent: l })));
+function trajectoryImage(strokes) {
+  const paths = strokes.map((samples) => tracePoints(samples, {
+    ...trace.options, page: trace.page, offset: trace.offset, stillGyro: segmenter.stillGyro, live: false,
+  }).points).filter((points) => points.length > 1);
+  const points = paths.flat();
+  if (!points.length) throw new Error('No reconstructed pen movement to recognize');
+  const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const canvas = document.createElement('canvas');
+  canvas.width = 280; canvas.height = 280;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const pad = 18;
+  const scale = Math.min((canvas.width - 2 * pad) / Math.max(maxX - minX, 1e-6), (canvas.height - 2 * pad) / Math.max(maxY - minY, 1e-6));
+  const at = ([x, y]) => [pad + (x - minX) * scale, pad + (y - minY) * scale];
+  ctx.strokeStyle = '#fff';
+  ctx.fillStyle = '#fff';
+  ctx.lineWidth = 18;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  paths.forEach((path) => {
+    ctx.beginPath();
+    path.forEach((point, index) => {
+      const [x, y] = at(point);
+      if (index) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+    });
+    ctx.stroke();
+  });
+  return canvas.toDataURL('image/png');
 }
 
-async function readLetter(samples) {
-  trace.draw(samples, true);
+function renderPrediction(result) {
+  const character = result.prediction || '?';
+  const main = $('letter');
+  main.textContent = character;
+  main.dir = 'auto';
+  main.dataset.empty = 'false';
+  main.style.opacity = '1';
+  main.classList.remove('pop'); void main.offsetWidth; main.classList.add('pop');
+  const percent = Math.round(Number(result.score || 0) * 100);
+  $('letter-meta').textContent = `${percent}% CNN score · ${result.mode} mode · ${Number(result.inference_ms).toFixed(1)} ms`;
+  const alternatives = result.top3 || [];
+  $('letter-alts').hidden = alternatives.length < 2;
+  $('letter-alts-list').replaceChildren(...alternatives.slice(1).map((item) => {
+    const option = document.createElement('span');
+    option.dir = 'auto';
+    option.textContent = `${item.character} ${Math.round(item.score * 100)}%`;
+    return option;
+  }));
+}
+
+async function classifyImage(image, { append = false, source = 'imu' } = {}) {
+  if (reading) return;
   if (lettersHealth.state !== 'ready') {
-    startRecenter('error', 'Letter recognition isn’t available on this server right now.');
+    setStatus('letters', 'error', 'The multilingual image model is not ready on the server.');
     return;
   }
   reading = true;
-  setStatus('letters', 'reading', 'Reading your letter…');
+  setStatus('letters', 'reading', 'Preparing the character image and running the CNN…');
   let state = 'paused', outcome;
   try {
-    const result = await predictLetter(samples, { watchCode: watch.code });
-    showLetter(result);
-    if (result.accepted && result.letter) { text += result.letter; renderText(); }
-    outcome = result.accepted ? 'Got it.' : 'Not sure about that one, try it again.';
+    const result = await predictLetterImage(image, modeSelect.value);
+    renderPrediction(result);
+    if (append && result.prediction) { text += result.prediction; renderText(); }
+    outcome = `CNN predicted ${result.prediction}.`;
   } catch (err) {
     state = 'error';
-    outcome = `Couldn’t read that letter: ${err.message}.`;
+    outcome = `Couldn’t recognize that image: ${err.message}.`;
   }
   reading = false;
-  if (listening && sensor.state === 'live') startRecenter(state, outcome);
-  else { segmenter.reset(); refreshLettersStatus(); }
+  if (source === 'imu' && listening && sensor.state === 'live') startRecenter(state, outcome);
+  else {
+    segmenter.reset();
+    refreshLettersStatus();
+  }
 }
+
+async function readLetter(strokes) {
+  trace.draw(strokes, true);
+  lastStrokes = strokes;
+  lastLetter = strokes.flat();
+  try {
+    const image = trajectoryImage(strokes);
+    await classifyImage(image, { append: true, source: 'imu' });
+  } catch (err) {
+    setStatus('letters', 'error', `Couldn’t build the reconstructed character image: ${err.message}.`);
+    if (listening && sensor.state === 'live') startRecenter('error', 'The character image could not be prepared.');
+  }
+}
+
+function scheduleStrokeRecognition() {
+  clearTimeout(recognitionTimer);
+  if (!pendingStrokes.length) return;
+  $('recognize').disabled = false;
+  setStatus('letters', 'writing', `${pendingStrokes.length} stroke${pendingStrokes.length === 1 ? '' : 's'} captured. Add more, or wait ${recognitionDelay} s to recognize.`);
+  recognitionTimer = setTimeout(() => recognizePendingStrokes(), recognitionDelay * 1000);
+}
+
+function recognizePendingStrokes() {
+  clearTimeout(recognitionTimer);
+  if (!pendingStrokes.length) return;
+  const strokes = pendingStrokes;
+  pendingStrokes = [];
+  $('recognize').disabled = true;
+  readLetter(strokes);
+}
+$('recognize').addEventListener('click', recognizePendingStrokes);
 
 function onLetterSample(s) {
   if (calibration && calibration.phase === 'still') {
@@ -384,18 +479,35 @@ function onLetterSample(s) {
   if (recentering(s)) return;
   const letter = segmenter.update(s);
   const writing = segmenter.state === State.WRITING;
-  if (writing && !wasWriting) setStatus('letters', 'writing', 'Writing…');
+  if (writing && !wasWriting) {
+    clearTimeout(recognitionTimer);
+    $('recognize').disabled = true;
+    setStatus('letters', 'writing', pendingStrokes.length ? `Adding a stroke to this character…` : 'Writing…');
+  }
   if (!writing && wasWriting && !letter) refreshLettersStatus(); // too short to count
   wasWriting = writing;
   if (writing && !traceQueued) {
     traceQueued = true;
-    requestAnimationFrame(() => { traceQueued = false; if (segmenter.state === State.WRITING) trace.draw(segmenter.active); });
+    requestAnimationFrame(() => {
+      traceQueued = false;
+      if (segmenter.state === State.WRITING) trace.draw([...pendingStrokes, segmenter.active]);
+    });
   }
-  if (letter) { wasWriting = false; lastLetter = letter; $('download-letter').disabled = false; readLetter(letter); }
+  if (letter) {
+    wasWriting = false;
+    pendingStrokes.push(letter);
+    lastStrokes = pendingStrokes;
+    lastLetter = pendingStrokes.flat();
+    $('download-letter').disabled = false;
+    segmenter.reset();
+    trace.draw(pendingStrokes, true);
+    scheduleStrokeRecognition();
+  }
 }
 
 function renderText() {
   $('composed-text').textContent = text;
+  $('composed-text').dir = 'auto';
   $('composed-placeholder').hidden = text.length > 0;
   store.set('airwrite.text', text);
 }
@@ -445,7 +557,7 @@ function renderWatch() {
     off: 'Not paired',
     pairing: 'Getting a code…',
     waiting: `Code ${watch.code} · waiting`,
-    receiving: `${st ? st.rate_hz.toFixed(0) : '?'} Hz · used for letters`,
+    receiving: `${st ? st.rate_hz.toFixed(0) : '?'} Hz · receiving`,
     nomotion: 'Data has no motion values',
     expired: 'Pairing expired',
   }[watch.state];
@@ -455,7 +567,7 @@ function renderWatch() {
   $('watch-url').textContent = watch.url;
   $('watch-status-text').textContent = {
     waiting: st && st.samples > 0 ? 'Data stopped arriving. Is SensorLog still streaming?' : 'Waiting for the first data…',
-    receiving: `Receiving ${st ? st.rate_hz.toFixed(0) : ''} samples a second. Letters now use the pen and the watch.`,
+    receiving: `Receiving ${st ? st.rate_hz.toFixed(0) : ''} samples a second. Watch pairing is active.`,
     nomotion: 'Data is arriving, but it has no motion values the app recognises. Check SensorLog is sending the watch’s accelerometer, gyroscope and orientation.',
     expired: 'This pairing expired. Pair again to get a new address.',
     pairing: 'Getting a code…', off: '',

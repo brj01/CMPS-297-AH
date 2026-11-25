@@ -1,5 +1,5 @@
 # Hostable AirWrite website (web_app.py). Works on Hugging Face Spaces (Docker)
-# and Render. Set HF_TOKEN as a secret so the private letters model can download.
+# and Render. The multilingual CNN is downloaded from its configured HF repo.
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

@@ -80,6 +80,23 @@
         <span class="status-mark" aria-hidden="true"></span>
         <span class="status-text" id="letters-status-text" role="status">Connect your sensor to start.</span>
         <span class="status-actions">
+          <label class="mode-control" for="recognition-mode">CNN mode
+            <select id="recognition-mode">
+              <option value="auto">Auto</option>
+              <option value="english">English</option>
+              <option value="arabic">Arabic</option>
+              <option value="numbers">Numbers</option>
+            </select>
+          </label>
+          <label class="mode-control" for="recognition-delay">Recognize after
+            <select id="recognition-delay">
+              <option value="1">1 s</option>
+              <option value="1.5">1.5 s</option>
+              <option value="2" selected>2 s</option>
+              <option value="3">3 s</option>
+            </select>
+          </label>
+          <button class="btn" id="recognize" type="button" disabled>Recognize</button>
           <button class="btn btn-ghost" id="calibrate" type="button" title="Hold still, then draw one clockwise circle: measures sensor noise, and where and how big your page is">Calibrate</button>
           <button class="btn btn-ghost" id="listen-toggle" type="button" aria-pressed="false">Pause</button>
           <button class="btn btn-ghost btn-icon" id="open-settings" type="button" aria-label="Letter settings" title="Letter settings">
@@ -168,7 +185,7 @@
 
   <footer class="colophon">
     <p>Works in Chrome and Edge, on a computer or an Android phone. Close the WitMotion app first, since the sensor only talks to one program at a time.</p>
-    <p>Gestures are recognised entirely in your browser. For letters, only the motion of each finished letter is sent to the server.</p>
+    <p>Gestures are recognised entirely in your browser. For letters, the reconstructed character image is sent to the multilingual CNN; raw motion samples are not.</p>
   </footer>
 
   <dialog class="settings" id="watch-dialog" aria-labelledby="watch-title">

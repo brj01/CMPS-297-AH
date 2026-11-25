@@ -71,13 +71,14 @@ export class Segmenter {
   }
 }
 
-export async function predictLetter(samples, { signal, watchCode = null } = {}) {
-  const body = { samples: samples.map((s) => ({ t: s.t, acc: s.acc, gyro: s.gyro, orientation: s.angle })) };
-  if (watchCode) body.watch_code = watchCode;
+export async function predictLetterImage(image, mode = 'auto', { signal } = {}) {
   let res;
   try {
     res = await fetch('/api/letters/predict', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image, mode }),
+      signal,
     });
   } catch {
     throw new Error('Could not reach the server');

@@ -22,3 +22,10 @@ CONFIDENCE_THRESHOLD = float(os.getenv("AIRWRITE_CONFIDENCE_THRESHOLD", "0.2"))
 SENSOR_MODE = os.getenv("AIRWRITE_SENSOR_MODE", "auto").lower()
 RECORDINGS_DIR = ROOT / "data" / "recordings"
 MODEL_MANAGEMENT_TOKEN = os.getenv("AIRWRITE_MODEL_MANAGEMENT_TOKEN", "")
+IMAGE_HF_REPO = os.getenv("AIRWRITE_IMAGE_HF_REPO", "Faisaljoudi/airwrite-multilingual-74")
+IMAGE_MODEL_PATH = Path(os.getenv(
+    "AIRWRITE_IMAGE_MODEL_PATH",
+    str(ROOT / "models" / "airwrite_multilingual.keras"),
+))
+if not IMAGE_MODEL_PATH.is_absolute():
+    IMAGE_MODEL_PATH = ROOT / IMAGE_MODEL_PATH

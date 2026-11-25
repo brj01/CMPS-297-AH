@@ -1,16 +1,16 @@
 # AirWrite
 
-AirWrite is a local FastAPI/WebSocket application for IMU air-writing. The UI works in simulation mode without hardware; live predictions use the pinned private Hugging Face 6DMG SVM fusion bundle.
+AirWrite includes a local FastAPI/WebSocket IMU application and a hostable browser website. The website reconstructs IMU strokes and classifies completed character images with a multilingual CNN; the separate desktop application retains its existing SVM classifier.
 
 ## Windows 11 setup
 
 1. Install Python 3.11 and enable Bluetooth.
-2. Open PowerShell in this directory and run `.\start.bat`.
-3. Open http://localhost:8000.
-4. Scan for the WitMotion device, select its address, and connect. BLE notification characteristics are discovered rather than hardcoded.
+2. Open PowerShell in this directory and run `.\start.bat` to start the desktop app (`app.py`).
+3. For the browser website, use the separate `web_app.py` command in the Website section below.
+4. In the desktop app, scan for the WitMotion device, select its address, and connect. BLE notification characteristics are discovered rather than hardcoded.
 5. For SensorLog, send JSON POST requests to the URL shown by `/api/status`. Put the laptop and watch/iPhone on the same LAN. If `AIRWRITE_WATCH_TOKEN` is set, send it as `X-AirWrite-Token`; allow Python/port 8000 through Windows Firewall only on a trusted private network.
 
-Create a virtual environment manually with `python -m venv .venv` and install with `.venv\Scripts\python.exe -m pip install -r requirements.txt`. The launcher updates the lightweight SVM dependencies on every start. The current `airwrite_live.joblib` model does not require TensorFlow. Optional legacy Keras support is listed separately in `requirements-keras.txt`; TensorFlow on Windows may require enabling long paths.
+Create a virtual environment manually with `python -m venv .venv` and install with `.venv\Scripts\python.exe -m pip install -r requirements.txt`. The desktop launcher retains its SVM dependencies. The website's multilingual image classifier requires `requirements-web.txt`, including TensorFlow.
 
 ## Hugging Face models
 
@@ -32,37 +32,45 @@ The current application includes the live acquisition path, watch receiver, time
 
 ## Website (letters + gestures)
 
-`web_app.py` serves a hostable website with two tabs: **Letters** (the SVM letters model) and **Gestures** (the random forest in `gestures/`). The browser connects to the sensor over Web Bluetooth, so one connection feeds both tabs and the server never needs Bluetooth. Gestures are recognised in the browser; for letters, the browser detects each letter and sends only that letter's motion to `POST /api/letters/predict`, so the private model stays on the server.
+`web_app.py` serves a hostable website with two tabs: **Letters** (the 74-class multilingual image CNN) and **Gestures** (the random forest in `gestures/`). The browser connects to the sensor over Web Bluetooth, so the server never needs Bluetooth. For IMU letters, the browser preserves the reconstructed trajectory and submits a rasterized image to `POST /api/letters/predict`.
 
 Run it locally (Chrome or Edge; `localhost` counts as secure for Web Bluetooth):
 
-```bash
-.venv/bin/pip install -r requirements-web.txt
-.venv/bin/python -m uvicorn web_app:app --port 8000
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-web.txt
+.\.venv\Scripts\python.exe -m uvicorn web_app:app --host 127.0.0.1 --port 8000
 ```
 
-Then open http://localhost:8000. Without the model the site still runs: gestures work, and the Letters tab draws your strokes and says recognition is unavailable.
+Then open http://localhost:8000. On first startup, the website downloads the model checkpoint and its exact labels/preprocessing metadata from `Faisaljoudi/airwrite-multilingual-74`; it loads the model once and reports availability at `/api/health`. To use local assets instead, place `airwrite_multilingual.keras`, `airwrite_multilingual.labels.json`, and `airwrite_multilingual.preprocessing.json` in `models/`, or set `AIRWRITE_IMAGE_MODEL_PATH` to the checkpoint path. `AIRWRITE_IMAGE_HF_REPO` changes the Hugging Face repository. Hugging Face authentication is read from the environment, never exposed to the browser.
+
+The Letters tab offers Auto, English, Arabic, and Numbers modes, an adjustable multi-stroke inactivity delay, and manual recognition for IMU-written characters. CNN predictions appear in the existing letter result area. The published test accuracies (English 82.17%, Arabic 95.63%, Western digits 94.98%, Arabic-Indic digits 99.05%) are results on the model's public image test sets, not measured AirWrite IMU accuracy. IMU-to-image recognition accuracy has not yet been evaluated.
 
 ### Hosting on Hugging Face Spaces
 
-Web Bluetooth only works over HTTPS, which Spaces provides. The letters model is downloaded at startup using the `HF_TOKEN` secret.
+Web Bluetooth only works over HTTPS, which Spaces provides. The multilingual CNN is downloaded at startup from its configured Hugging Face repository. Add `HF_TOKEN` as a Space secret only if the model repository requires authentication.
 
-1. On huggingface.co, create a new Space: SDK **Docker**, blank template, visibility **Public** (so people can open it without logging in).
-2. In the Space's **Settings → Variables and secrets**, add a secret `HF_TOKEN` with a token that can read the letters model repository.
-3. Deploy from this repo (needs `hf auth login` with a token that has write access to the Space):
+1. On huggingface.co, create a new Space: SDK **Docker**, blank template. Choose public visibility if you want people to open it without logging in.
+2. The model repo defaults to `Faisaljoudi/airwrite-multilingual-74`, which is public; no Space `HF_TOKEN` is needed for model downloads. Set `AIRWRITE_IMAGE_HF_REPO` only if you use another repo, and add `HF_TOKEN` as a Space secret only if that repo is private.
+3. In PowerShell, authenticate the Hugging Face CLI with a token that can write to the Space:
 
-   ```bash
-   scripts/deploy_hf_space.sh <hf-username>/<space-name>
+   ```powershell
+   .\.venv\Scripts\hf.exe auth login
    ```
 
-4. The Space builds the `Dockerfile` and goes live at `https://<hf-username>-<space-name>.hf.space`. Re-run the script to deploy updates.
+   Then in Git Bash, deploy the current working tree:
 
-The same `Dockerfile` also runs on Render (Docker web service; set `HF_TOKEN` as an environment variable).
+   ```bash
+   bash scripts/deploy_hf_space.sh <hf-username>/<space-name>
+   ```
+
+4. The Space builds the `Dockerfile` and serves the site at `https://<hf-username>-<space-name>.hf.space`. Wait for the build to finish and `/api/health` to report `image_model.state: ready`; the first start downloads and loads the CNN. Re-run the script to deploy updates.
+
+The same `Dockerfile` also runs on Render (Docker web service; set `AIRWRITE_IMAGE_HF_REPO` or `HF_TOKEN` as needed).
 
 ### Apple Watch on the website
 
-The **Apple Watch** panel next to the sensor gives each browser a pairing address, `https://<site>/api/watch/<code>`. Put it in SensorLog as an HTTP (JSON) streaming target; each letter is then classified with both pen and watch, matching watch samples by timestamp (±0.25 s, as in the desktop app). Pairings live in server memory and expire after 30 minutes without activity, so run a single server process. SensorLog's field names are read with the same aliases as the desktop app (`sensors/apple_watch.py`); the panel warns if data arrives without any recognised motion values.
+The **Apple Watch** panel next to the sensor gives each browser a pairing address, `https://<site>/api/watch/<code>`. Put it in SensorLog as an HTTP (JSON) streaming target. Pairings live in server memory and expire after 30 minutes without activity, so run a single server process. SensorLog's field names are read with the same aliases as the desktop app (`sensors/apple_watch.py`); the panel warns if data arrives without any recognised motion values. The website's image CNN classifies the reconstructed pen image; watch samples are still received by the existing pairing service but are not model inputs to this CNN.
 
-The letter drawing is only a picture for the writer; the model never sees it. It reconstructs the pen's path with a Kalman filter per room axis (position, speed, accelerometer error): the accelerometer (gravity removed using orientation) gives the detail, and after calibration the orientation gives a drift-free position, `p = R·r`, where `r` is the sensor's position relative to the pivot the hand turns about. Before calibration, speed is pinned to zero whenever the pen is still. The live drawing is the filter output (it only uses the past, so drawn lines never move); the finished letter uses the same model run backwards too (an RTS smoother), so the change at the pause is small. **Calibrate** asks you to hold still (sensor noise), then draw one clockwise circle in front of you: its plane becomes the page, its direction decides left/right (so the drawing can't come out mirrored, whatever way the sensor is mounted), its size sets the scale, and `r` (plus any leftover accelerometer error) is fitted so that the rotation explains the measured acceleration, `a = R''·r + b`, with no integration, so a slow, big circle works as well as a quick one (the circle step allows up to 15 s). The hold-still step also sets how slow a rotation still counts as movement, from the sensor's resting noise. The hold-still step also measures the accelerometer's constant error, which is subtracted. The calibration resets when the sensor reconnects. After each letter, movement is ignored for a moment (1.5 s by default, adjustable in the letter settings) so you can bring the pen back, and the next letter starts once you hold still. On the website, the letter detector (otherwise the same as the desktop app's) also treats the pen as still when it is barely rotating with a steady acceleration, so hand tremor neither starts a letter nor keeps one going.
+The website's drawing and calibration path reconstructs the pen trajectory with a Kalman filter per room axis (position, speed, accelerometer error), and an RTS smoother for the finished strokes. **Calibrate** still asks for two seconds holding still, then one clockwise circle in front of you; this sets the writing plane, direction, scale, and the estimated relation between rotation and motion. The calibration resets when the sensor reconnects. On the website, each pause-terminated segment is kept as a separate stroke; after the adjustable inactivity delay, the completed character image is classified, so dots and multi-stroke characters can be included. As with all IMU-only position estimates, reconstruction accuracy depends on the sensor and motion and has not been benchmarked against the image model's public dataset metrics.
 
 `scripts/build_gesture_demo.py` rebuilds `web/demo/gestures.json`, the sample recording behind "Play sample gestures".
