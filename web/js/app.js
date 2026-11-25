@@ -3,6 +3,7 @@ import { Segmenter, State, predictLetterImage, tracePoints, pageFromCircle, rest
 import { GestureMode, GESTURES, GLYPHS, LABELS, loadGestureModel } from './gestures.js';
 import { Instruments } from './instruments.js';
 import { WatchLink } from './watch.js';
+import { FruitGame } from './game.js';
 
 const $ = (id) => document.getElementById(id);
 const store = {
@@ -21,15 +22,28 @@ const instruments = new Instruments({
   rateRo: $('ro-rate'), count: $('ro-count'), motion: $('ro-motion'),
 });
 
-let mode = location.hash === '#gestures' ? 'gestures' : store.get('airwrite.mode', 'letters');
+const game = new FruitGame({
+  canvas: $('game-canvas'),
+  score: $('game-score'),
+  time: $('game-time'),
+  lives: $('game-lives'),
+  overlay: $('game-overlay'),
+  overlayTitle: $('game-overlay-title'),
+  overlayCopy: $('game-overlay-copy'),
+  startButton: $('game-start'),
+  onStateChange: refreshGameStatus,
+});
+
+let mode = location.hash === '#gestures' ? 'gestures' : location.hash === '#games' ? 'games' : store.get('airwrite.mode', 'letters');
 let gestures = null;       // GestureMode once the model has loaded
 let gestureModel = null;
 let lettersHealth = { state: 'loading', detail: '' };
 
 /* ------------------------------------------------------------------ tabs */
 
-const tabs = { letters: $('tab-letters'), gestures: $('tab-gestures') };
-const panels = { letters: $('panel-letters'), gestures: $('panel-gestures') };
+const tabs = { letters: $('tab-letters'), gestures: $('tab-gestures'), games: $('tab-games') };
+const panels = { letters: $('panel-letters'), gestures: $('panel-gestures'), games: $('panel-games') };
+const modeOrder = Object.keys(tabs);
 
 function setMode(next, focus = false) {
   mode = next;
@@ -41,16 +55,24 @@ function setMode(next, focus = false) {
   }
   if (focus) tabs[next].focus();
   store.set('airwrite.mode', next);
-  history.replaceState(null, '', next === 'gestures' ? '#gestures' : location.pathname);
+  history.replaceState(null, '', next === 'letters' ? location.pathname : `#${next}`);
   segmenter.reset();
   if (gestures) gestures.reset();
-  if (next === 'letters') { trace.resize(); refreshLettersStatus(); } else refreshGestureStatus();
+  game.setActive(next === 'games');
+  if (next === 'letters') { trace.resize(); refreshLettersStatus(); }
+  else if (next === 'gestures') refreshGestureStatus();
+  else refreshGameStatus();
 }
 
 Object.entries(tabs).forEach(([key, tab]) => {
   tab.addEventListener('click', () => setMode(key));
   tab.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') { e.preventDefault(); setMode(key === 'letters' ? 'gestures' : 'letters', true); }
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      e.preventDefault();
+      const step = e.key === 'ArrowRight' ? 1 : -1;
+      const next = modeOrder[(modeOrder.indexOf(key) + step + modeOrder.length) % modeOrder.length];
+      setMode(next, true);
+    }
   });
 });
 
@@ -76,6 +98,7 @@ function renderSensor(state, detail = '') {
   }
   refreshLettersStatus();
   refreshGestureStatus();
+  refreshGameStatus();
 }
 
 sensor.addEventListener('state', (e) => {
@@ -296,6 +319,12 @@ function endCalibration() {
   segmenter.reset();
 }
 
+function clearTraceAfter(samples) {
+  setTimeout(() => {
+    if (!calibration && segmenter.state !== State.WRITING && trace.samples === samples) trace.draw([]);
+  }, 1400);
+}
+
 calibrateBtn.addEventListener('click', () => {
   if (calibration) { // "Skip circle" / "Cancel"
     const skippedCircle = calibration.phase === 'circle';
@@ -341,6 +370,7 @@ function finishCircle(samples) {
       ? 'The drawing now follows your pen as you write.'
       : 'I couldn’t link your pen’s rotation to its movement, so the live drawing will be rougher until you pause. Calibrate again, turning your wrist to draw the circle.';
     setStatus('letters', 'ready', `Calibrated: your circle was about ${Math.round(trace.page.size * 100)} cm across. ${fused}`);
+    clearTraceAfter(samples);
   } catch (err) {
     trace.draw(samples, true);
     if (calibration && calibration.detector) calibration.detector.reset();
@@ -407,18 +437,21 @@ async function classifyImage(image, { append = false, source = 'imu' } = {}) {
     return;
   }
   reading = true;
+  const displayedSamples = trace.samples;
   setStatus('letters', 'reading', 'Preparing the character image and running the CNN…');
-  let state = 'paused', outcome;
+  let state = 'paused', outcome, recognized = false;
   try {
     const result = await predictLetterImage(image, modeSelect.value);
     renderPrediction(result);
     if (append && result.prediction) { text += result.prediction; renderText(); }
     outcome = `CNN predicted ${result.prediction}.`;
+    recognized = true;
   } catch (err) {
     state = 'error';
     outcome = `Couldn’t recognize that image: ${err.message}.`;
   }
   reading = false;
+  if (recognized) clearTraceAfter(displayedSamples);
   if (source === 'imu' && listening && sensor.state === 'live') startRecenter(state, outcome);
   else {
     segmenter.reset();
@@ -532,15 +565,17 @@ document.addEventListener('keydown', (e) => {
 renderText();
 
 async function checkHealth() {
+  let retry = false;
   try {
     const res = await fetch('/api/health');
     const data = await res.json();
     lettersHealth = data.letters || { state: 'unavailable' };
   } catch {
     lettersHealth = { state: 'unavailable', detail: 'server unreachable' };
+    retry = true;
   }
   refreshLettersStatus();
-  if (lettersHealth.state === 'loading') setTimeout(checkHealth, 4000);
+  if (lettersHealth.state === 'loading' || retry) setTimeout(checkHealth, 4000);
 }
 checkHealth();
 
@@ -610,6 +645,14 @@ function refreshGestureStatus() {
   setStatus('gestures', 'idle', 'Connect your sensor, or play the sample recording.');
 }
 
+function refreshGameStatus() {
+  if (game.state === 'running') return setStatus('game', 'ready', 'Slice quickly! Drag across the fruit or make a swipe.');
+  if (game.state === 'over') return setStatus('game', 'idle', `Round over. You scored ${game.score}. Play again?`);
+  setStatus('game', 'idle', sensor.state === 'live'
+    ? 'Ready when you are. Swipe in the air or drag across the fruit.'
+    : 'Ready when you are. Connect a sensor for hands-free swipes.');
+}
+
 function buildOdds(classes) {
   const order = [...GESTURES, 'return', 'idle'].filter((c) => classes.includes(c));
   $('odds').replaceChildren(...order.map((c) => {
@@ -665,6 +708,8 @@ function showGesture(r) {
   item.append(miniGlyph(GLYPHS[glyphKey]), document.createTextNode(r.kind === 'gesture' ? LABELS[r.label] : r.kind === 'return' ? 'return' : 'unsure'));
   list.prepend(item);
   while (list.children.length > 12) list.lastElementChild.remove();
+
+  if (mode === 'games' && r.kind === 'gesture') game.swipe(r.label);
 
   clearTimeout(fadeTimer);
   fadeTimer = setTimeout(() => stage.classList.add('faded'), 4000);

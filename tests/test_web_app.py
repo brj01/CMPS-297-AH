@@ -25,7 +25,10 @@ def png_data_url():
 
 
 def test_page_and_gesture_files_are_served(client):
-    assert "AirWrite" in client.get("/").text
+    page = client.get("/").text
+    assert "AirWrite" in page
+    assert 'id="tab-games"' in page and 'id="panel-games"' in page
+    assert client.get("/js/game.js").status_code == 200
     assert client.get("/gestures/core.js").status_code == 200
     assert client.get("/gestures/model.json").json()["classes"]
     assert client.get("/demo/gestures.json").status_code == 200

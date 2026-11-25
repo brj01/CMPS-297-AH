@@ -55,6 +55,9 @@
       <button class="tab" role="tab" id="tab-gestures" aria-controls="panel-gestures" aria-selected="false" tabindex="-1" type="button">
         Gestures <span class="tab-hint">swipes &amp; circles</span>
       </button>
+      <button class="tab" role="tab" id="tab-games" aria-controls="panel-games" aria-selected="false" tabindex="-1" type="button">
+        Games <span class="tab-hint">ninja fruits</span>
+      </button>
     </div>
 
     <!-- Letters -->
@@ -152,6 +155,40 @@
         <span class="eyebrow">Recent</span>
         <ol class="history-list" id="gesture-history"><li class="history-empty">Nothing yet</li></ol>
       </div>
+    </section>
+
+    <!-- Games -->
+    <section class="sheet" id="panel-games" role="tabpanel" aria-labelledby="tab-games" hidden>
+      <div class="game-heading">
+        <div>
+          <span class="eyebrow">A little practice</span>
+          <h1 class="game-title">Ninja Fruits</h1>
+          <p class="game-intro-copy">Slice the fruit with a quick swipe. Keep an eye out for the ones you miss!</p>
+        </div>
+        <div class="game-scoreboard" aria-label="Round score">
+          <div class="game-stat"><span class="eyebrow">Score</span><strong id="game-score">0</strong></div>
+          <div class="game-stat"><span class="eyebrow">Time</span><strong><span id="game-time">45</span><small>s</small></strong></div>
+          <div class="game-stat"><span class="eyebrow">Lives</span><strong id="game-lives" aria-label="3 lives">♥ ♥ ♥</strong></div>
+        </div>
+      </div>
+
+      <div class="game-board" id="game-board">
+        <canvas id="game-canvas" aria-label="Fruit slicing game. Drag or swipe across fruit to score points. Arrow keys also make a slash." tabindex="0"></canvas>
+        <div class="game-overlay" id="game-overlay">
+          <span class="game-fruit-mark" aria-hidden="true">🍉</span>
+          <h2 id="game-overlay-title">Ready, set, slice!</h2>
+          <p id="game-overlay-copy">Drag across the fruit, or connect your sensor and swipe in the air. Don’t let three fruits slip by.</p>
+        </div>
+      </div>
+
+      <div class="statusline" id="game-status" data-state="idle">
+        <span class="status-mark" aria-hidden="true"></span>
+        <span class="status-text" id="game-status-text" role="status">Ready when you are. Connect a sensor for hands-free swipes.</span>
+        <span class="status-actions">
+          <button class="btn btn-solid" id="game-start" type="button">Start game</button>
+        </span>
+      </div>
+      <p class="game-help">Use your mouse, finger, or sensor to slice. Arrow keys work too.</p>
     </section>
 
     <!-- Instruments -->
