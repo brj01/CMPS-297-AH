@@ -250,21 +250,10 @@ let traceQueued = false;
 let text = store.get('airwrite.text', '');
 let lastLetter = null;
 let lastStrokes = [];
-let pendingStrokes = [];
-let recognitionTimer = null;
-let recognitionDelay = Number(store.get('airwrite.recognition-delay', 2));
 const modeSelect = $('recognition-mode');
 modeSelect.value = store.get('airwrite.recognition-mode', 'auto');
 if (!modeSelect.value) modeSelect.value = 'auto';
 modeSelect.addEventListener('change', () => store.set('airwrite.recognition-mode', modeSelect.value));
-const delaySelect = $('recognition-delay');
-delaySelect.value = String(recognitionDelay);
-if (delaySelect.value !== String(recognitionDelay)) { recognitionDelay = 2; delaySelect.value = '2'; }
-delaySelect.addEventListener('change', () => {
-  recognitionDelay = Number(delaySelect.value);
-  store.set('airwrite.recognition-delay', recognitionDelay);
-  if (pendingStrokes.length) scheduleStrokeRecognition();
-});
 // After each letter: a moment to bring the pen back, then hold still to start the next.
 let recenter = null; // { until, outcome, state, window, lastText }
 let recenterSeconds = Number(store.get('airwrite.recenter', 1.5));
@@ -346,6 +335,8 @@ calibrateBtn.addEventListener('click', () => {
   if (sensor.state !== 'live') { setStatus('letters', 'error', 'Connect your sensor first, then calibrate.'); return; }
   segmenter.reset();
   recenter = null;
+  wasWriting = false;
+  trace.draw([]); // calibration starts from a clean board
   calibration = { phase: 'still', samples: [], started: performance.now() };
   calibrateBtn.textContent = 'Cancel';
   setStatus('letters', 'calibrating', 'Step 1 of 2: hold the pen completely still…');
@@ -374,13 +365,12 @@ function finishCircle(samples) {
   $('download-letter').disabled = false;
   try {
     trace.page = pageFromCircle(samples, { offset: trace.offset, stillGyro: segmenter.stillGyro });
-    trace.draw(samples, true);
     endCalibration();
+    trace.draw([]); // a clean board: the next letter starts fresh
     const fused = trace.page.lever
       ? 'The drawing now follows your pen as you write.'
       : 'I couldn’t link your pen’s rotation to its movement, so the live drawing will be rougher until you pause. Calibrate again, turning your wrist to draw the circle.';
     setStatus('letters', 'ready', `Calibrated: your circle was about ${Math.round(trace.page.size * 100)} cm across. ${fused}`);
-    clearTraceAfter(samples);
   } catch (err) {
     trace.draw(samples, true);
     if (calibration && calibration.detector) calibration.detector.reset();
@@ -482,24 +472,6 @@ async function readLetter(strokes) {
   }
 }
 
-function scheduleStrokeRecognition() {
-  clearTimeout(recognitionTimer);
-  if (!pendingStrokes.length) return;
-  $('recognize').disabled = false;
-  setStatus('letters', 'writing', `${pendingStrokes.length} stroke${pendingStrokes.length === 1 ? '' : 's'} captured. Add more, or wait ${recognitionDelay} s to recognize.`);
-  recognitionTimer = setTimeout(() => recognizePendingStrokes(), recognitionDelay * 1000);
-}
-
-function recognizePendingStrokes() {
-  clearTimeout(recognitionTimer);
-  if (!pendingStrokes.length) return;
-  const strokes = pendingStrokes;
-  pendingStrokes = [];
-  $('recognize').disabled = true;
-  readLetter(strokes);
-}
-$('recognize').addEventListener('click', recognizePendingStrokes);
-
 function onLetterSample(s) {
   if (calibration && calibration.phase === 'still') {
     calibration.samples.push(s);
@@ -522,29 +494,21 @@ function onLetterSample(s) {
   if (recentering(s)) return;
   const letter = segmenter.update(s);
   const writing = segmenter.state === State.WRITING;
-  if (writing && !wasWriting) {
-    clearTimeout(recognitionTimer);
-    $('recognize').disabled = true;
-    setStatus('letters', 'writing', pendingStrokes.length ? `Adding a stroke to this character…` : 'Writing…');
-  }
+  if (writing && !wasWriting) setStatus('letters', 'writing', 'Writing…');
   if (!writing && wasWriting && !letter) refreshLettersStatus(); // too short to count
   wasWriting = writing;
   if (writing && !traceQueued) {
     traceQueued = true;
     requestAnimationFrame(() => {
       traceQueued = false;
-      if (segmenter.state === State.WRITING) trace.draw([...pendingStrokes, segmenter.active]);
+      if (segmenter.state === State.WRITING) trace.draw(segmenter.active);
     });
   }
   if (letter) {
+    // One stroke is one letter: recognise it as soon as the pen pauses.
     wasWriting = false;
-    pendingStrokes.push(letter);
-    lastStrokes = pendingStrokes;
-    lastLetter = pendingStrokes.flat();
     $('download-letter').disabled = false;
-    segmenter.reset();
-    trace.draw(pendingStrokes, true);
-    scheduleStrokeRecognition();
+    readLetter([letter]);
   }
 }
 
