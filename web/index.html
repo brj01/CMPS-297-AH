@@ -154,7 +154,7 @@
         <div>
           <span class="eyebrow">A little practice</span>
           <h1 class="game-title">Ninja Fruits</h1>
-          <p class="game-intro-copy">Slice the fruit with a quick swipe. Keep an eye out for the ones you miss!</p>
+          <p class="game-intro-copy">Aim with the pen, then flick it quickly to slice. Keep an eye out for the ones you miss!</p>
         </div>
         <div class="game-scoreboard" aria-label="Round score">
           <div class="game-stat"><span class="eyebrow">Score</span><strong id="game-score">0</strong></div>
@@ -164,11 +164,11 @@
       </div>
 
       <div class="game-board" id="game-board">
-        <canvas id="game-canvas" aria-label="Fruit slicing game. Drag or swipe across fruit to score points. Arrow keys also make a slash." tabindex="0"></canvas>
+        <canvas id="game-canvas" aria-label="Fruit slicing game, played with the motion sensor: aim the pen to move the cursor, flick it quickly to slice fruit."></canvas>
         <div class="game-overlay" id="game-overlay">
           <span class="game-fruit-mark" aria-hidden="true">🍉</span>
           <h2 id="game-overlay-title">Ready, set, slice!</h2>
-          <p id="game-overlay-copy">Drag across the fruit, or connect your sensor and swipe in the air. Don’t let three fruits slip by.</p>
+          <p id="game-overlay-copy">The pen is your blade: point it to move the cursor, flick it fast across a fruit to slice it. Don’t let three fruits slip by.</p>
         </div>
       </div>
 
@@ -176,10 +176,11 @@
         <span class="status-mark" aria-hidden="true"></span>
         <span class="status-text" id="game-status-text" role="status">Ready when you are. Connect a sensor for hands-free swipes.</span>
         <span class="status-actions">
+          <button class="btn btn-ghost" id="game-recenter" type="button" title="Puts the cursor back in the middle, wherever the pen points now">Recenter</button>
           <button class="btn btn-solid" id="game-start" type="button">Start game</button>
         </span>
       </div>
-      <p class="game-help">Use your mouse, finger, or sensor to slice. Arrow keys work too.</p>
+      <p class="game-help">Played with the sensor only. Turning the pen about 40° moves the cursor across the whole board.</p>
     </section>
 
     <!-- Instruments -->

@@ -32,10 +32,20 @@ const game = new FruitGame({
   overlayCopy: $('game-overlay-copy'),
   startButton: $('game-start'),
   onStartRequested: () => {
-    if (sensor.state === 'live') game.beginSensorSetup();
-    else game.start();
+    if (sensor.state !== 'live') { setStatus('game', 'error', 'Connect your sensor first: the game is played with the sensor only.'); return; }
+    game.setPointingAxis(gamePointingAxis());
+    game.start();
   },
   onStateChange: refreshGameStatus,
+});
+// The sensor axis the pen points along: measured by the Letters circle calibration
+// (from the sensor's position relative to the wrist), otherwise the sensor's x axis.
+function gamePointingAxis() {
+  return trace.page && trace.page.lever ? trace.page.lever : [1, 0, 0];
+}
+$('game-recenter').addEventListener('click', () => {
+  game.setPointingAxis(gamePointingAxis());
+  setStatus('game', game.state === 'running' ? 'ready' : 'idle', 'Recentered: the cursor is now where the pen points.');
 });
 
 let mode = location.hash === '#gestures' ? 'gestures' : location.hash === '#games' ? 'games' : store.get('airwrite.mode', 'letters');
@@ -50,9 +60,6 @@ const panels = { letters: $('panel-letters'), gestures: $('panel-gestures'), gam
 const modeOrder = Object.keys(tabs);
 
 function setMode(next, focus = false) {
-  if (next !== 'games' && game.state === 'calibrating') {
-    game.cancelSensorSetup('Sensor setup canceled when leaving Games.');
-  }
   mode = next;
   for (const key of Object.keys(tabs)) {
     const on = key === next;
@@ -110,8 +117,8 @@ function renderSensor(state, detail = '') {
 
 sensor.addEventListener('state', (e) => {
   const { state, detail } = e.detail;
-  if (state !== 'live' && game.state === 'calibrating') {
-    game.cancelSensorSetup('Sensor disconnected. Reconnect and start the setup again.');
+  if (state !== 'live' && game.state === 'running') {
+    game.stop('Sensor disconnected', 'The round was stopped. Reconnect the sensor and start again.');
   }
   if (state !== 'live' && state !== 'demo') { segmenter.reset(); recenter = null; }
   if (state === 'demo' || state === 'live') instruments.clear();
@@ -620,16 +627,13 @@ function refreshGestureStatus() {
 }
 
 function refreshGameStatus() {
-  if (game.state === 'calibrating') {
-    return setStatus('game', 'reading', game.setupPhase === 'still'
-      ? 'Sensor check: hold still for one second.'
-      : 'Sensor check passed. Make one quick, straight practice swipe.');
-  }
-  if (game.state === 'running') return setStatus('game', 'ready', 'Slice quickly! Drag across the fruit or make a swipe.');
+  $('game-start').disabled = sensor.state !== 'live';
+  $('game-recenter').disabled = sensor.state !== 'live';
+  if (game.state === 'running') return setStatus('game', 'ready', 'Aim with the pen and slice with a quick flick. Drifting? Press Recenter.');
   if (game.state === 'over') return setStatus('game', 'idle', `Round over. You scored ${game.score}. Play again?`);
   setStatus('game', 'idle', sensor.state === 'live'
-    ? 'Ready when you are. Swipe in the air or drag across the fruit.'
-    : 'Ready when you are. Connect a sensor for hands-free swipes.');
+    ? 'Point the pen at the board: the dot follows it. Press Recenter if it’s off to one side, then Start.'
+    : 'Connect your sensor to play. The game is played with the sensor only.');
 }
 
 function buildOdds(classes) {
@@ -688,23 +692,6 @@ function showGesture(r) {
   list.prepend(item);
   while (list.children.length > 12) list.lastElementChild.remove();
 
-  if (mode === 'games' && game.state === 'calibrating') {
-    if (!game.confirmPracticeSwipe(r) && game.setupPhase === 'swipe') {
-      setStatus('game', 'idle', r.label.startsWith('swipe_')
-        ? `Practice ${LABELS[r.label]} detected (${pct(r.confidence)} sure). Try another quick swipe.`
-        : 'Practice swipe not recognized yet. Try one quick, straight swipe.');
-    }
-  } else if (mode === 'games' && game.state === 'running' && r.label.startsWith('swipe_')) {
-    const sliced = game.swipe(r.label);
-    setStatus('game', sliced ? 'ready' : 'idle', sliced
-      ? `${LABELS[r.label]} (${pct(r.confidence)} sure)! Nice slice.`
-      : `${LABELS[r.label]} registered (${pct(r.confidence)} sure). Try again when fruit is in the air.`);
-  } else if (mode === 'games' && game.state === 'running' && r.kind === 'unsure') {
-    setStatus('game', 'idle', `Swipe not recognized. Best guess: ${LABELS[r.label] || r.label} (${pct(r.confidence)}). Try a quick, clear movement.`);
-  } else if (mode === 'games' && game.state === 'running' && r.kind === 'gesture') {
-    setStatus('game', 'idle', 'Only straight swipes slice fruit. Try up, down, left, or right.');
-  }
-
   clearTimeout(fadeTimer);
   fadeTimer = setTimeout(() => stage.classList.add('faded'), 4000);
 }
@@ -736,10 +723,8 @@ sensor.addEventListener('sample', (e) => {
   const s = e.detail;
   instruments.push(s);
   if (mode === 'letters') { if (sensor.state === 'live') onLetterSample(s); }
-  else {
-    if (mode === 'games') game.observeSensorSample(s);
-    if (gestures) gestures.push(gestureRow(s));
-  }
+  else if (mode === 'games') { if (sensor.state === 'live') game.observeSensorSample(s); }
+  else if (gestures) gestures.push(gestureRow(s));
 });
 
 window.addEventListener('load', () => { if (!window.GestureCore) { gestureModel = false; refreshGestureStatus(); } });
