@@ -709,13 +709,15 @@ function showGesture(r) {
   list.prepend(item);
   while (list.children.length > 12) list.lastElementChild.remove();
 
-  if (mode === 'games' && game.state === 'running' && r.kind === 'gesture') {
+  if (mode === 'games' && game.state === 'running' && r.label.startsWith('swipe_')) {
     const sliced = game.swipe(r.label);
     setStatus('game', sliced ? 'ready' : 'idle', sliced
-      ? `${LABELS[r.label]}! Nice slice.`
-      : 'Swipe recognized. Try again when fruit is in the air.');
+      ? `${LABELS[r.label]} (${pct(r.confidence)} sure)! Nice slice.`
+      : `${LABELS[r.label]} registered (${pct(r.confidence)} sure). Try again when fruit is in the air.`);
   } else if (mode === 'games' && game.state === 'running' && r.kind === 'unsure') {
-    setStatus('game', 'idle', 'Swipe not recognized. Try a quick, clear movement.');
+    setStatus('game', 'idle', `Swipe not recognized. Best guess: ${LABELS[r.label] || r.label} (${pct(r.confidence)}). Try a quick, clear movement.`);
+  } else if (mode === 'games' && game.state === 'running' && r.kind === 'gesture') {
+    setStatus('game', 'idle', 'Only straight swipes slice fruit. Try up, down, left, or right.');
   }
 
   clearTimeout(fadeTimer);
