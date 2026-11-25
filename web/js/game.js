@@ -16,7 +16,7 @@ function distanceToSegment(point, start, end) {
 }
 
 export class FruitGame {
-  constructor({ canvas, score, time, lives, overlay, overlayTitle, overlayCopy, startButton, onStateChange }) {
+  constructor({ canvas, score, time, lives, overlay, overlayTitle, overlayCopy, startButton, onStartRequested, onStateChange }) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.scoreElement = score;
@@ -26,8 +26,12 @@ export class FruitGame {
     this.overlayTitle = overlayTitle;
     this.overlayCopy = overlayCopy;
     this.startButton = startButton;
+    this.onStartRequested = onStartRequested || (() => this.start());
     this.onStateChange = onStateChange;
     this.state = 'ready';
+    this.setupPhase = null;
+    this.setupStarted = null;
+    this.setupSamples = [];
     this.score = 0;
     this.lives = 3;
     this.remaining = 45;
@@ -44,7 +48,13 @@ export class FruitGame {
     this.animation = null;
     this.pointer = null;
 
-    this.startButton.addEventListener('click', () => this.start());
+    this.startButton.addEventListener('click', () => {
+      if (this.state === 'calibrating') {
+        this.cancelSensorSetup();
+        return;
+      }
+      this.onStartRequested();
+    });
     this.canvas.addEventListener('pointerdown', (event) => this.pointerDown(event));
     this.canvas.addEventListener('pointermove', (event) => this.pointerMove(event));
     this.canvas.addEventListener('pointerup', () => { this.pointer = null; });
@@ -74,6 +84,9 @@ export class FruitGame {
 
   start() {
     this.state = 'running';
+    this.setupPhase = null;
+    this.setupStarted = null;
+    this.setupSamples = [];
     this.score = 0;
     this.lives = 3;
     this.remaining = 45;
@@ -85,9 +98,69 @@ export class FruitGame {
     this.lastSpawn = 0;
     this.overlay.hidden = true;
     this.startButton.textContent = 'Restart';
+    this.startButton.disabled = false;
     this.updateScoreboard();
     this.onStateChange();
     if (this.active) this.schedule();
+  }
+
+  beginSensorSetup() {
+    this.state = 'calibrating';
+    this.setupPhase = 'still';
+    this.setupStarted = null;
+    this.setupSamples = [];
+    this.overlay.hidden = false;
+    this.overlayTitle.textContent = 'Hold the sensor still';
+    this.overlayCopy.textContent = 'Keep the sensor steady for one second. Then make one quick, straight practice swipe.';
+    this.startButton.textContent = 'Cancel setup';
+    this.startButton.disabled = false;
+    this.onStateChange();
+  }
+
+  observeSensorSample(sample) {
+    if (this.state !== 'calibrating' || this.setupPhase !== 'still') return;
+    if (this.setupStarted === null) this.setupStarted = sample.t;
+    this.setupSamples.push(sample);
+    if (sample.t - this.setupStarted < 1 || this.setupSamples.length < 30) return;
+
+    const meanGyro = this.setupSamples.reduce(
+      (total, item) => total + Math.hypot(...item.gyro), 0,
+    ) / this.setupSamples.length;
+    const acceleration = this.setupSamples.map((item) => Math.hypot(...item.acc));
+    const accelerationSpread = Math.max(...acceleration) - Math.min(...acceleration);
+    if (meanGyro > 15 || accelerationSpread > 0.08) {
+      this.setupStarted = sample.t;
+      this.setupSamples = [];
+      this.onStateChange();
+      return;
+    }
+
+    this.setupPhase = 'swipe';
+    this.setupSamples = [];
+    this.overlayTitle.textContent = 'Try a practice swipe';
+    this.overlayCopy.textContent = 'Stillness check passed. Make one quick, straight swipe; the game starts when it is recognized.';
+    this.onStateChange();
+  }
+
+  confirmPracticeSwipe(result) {
+    if (this.state !== 'calibrating' || this.setupPhase !== 'swipe'
+      || !result || typeof result.label !== 'string' || !result.label.startsWith('swipe_')) return false;
+    this.start();
+    return true;
+  }
+
+  cancelSensorSetup(message = 'Sensor setup canceled. Start again whenever you are ready.') {
+    if (this.state !== 'calibrating') return;
+    this.state = 'ready';
+    this.setupPhase = null;
+    this.setupStarted = null;
+    this.setupSamples = [];
+    this.overlay.hidden = false;
+    this.overlayTitle.textContent = 'Ready, set, slice!';
+    this.overlayCopy.textContent = message;
+    this.startButton.textContent = 'Start game';
+    this.startButton.disabled = false;
+    this.onStateChange();
   }
 
   resize() {

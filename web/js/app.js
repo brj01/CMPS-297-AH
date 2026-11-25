@@ -31,6 +31,10 @@ const game = new FruitGame({
   overlayTitle: $('game-overlay-title'),
   overlayCopy: $('game-overlay-copy'),
   startButton: $('game-start'),
+  onStartRequested: () => {
+    if (sensor.state === 'live') game.beginSensorSetup();
+    else game.start();
+  },
   onStateChange: refreshGameStatus,
 });
 
@@ -46,6 +50,9 @@ const panels = { letters: $('panel-letters'), gestures: $('panel-gestures'), gam
 const modeOrder = Object.keys(tabs);
 
 function setMode(next, focus = false) {
+  if (next !== 'games' && game.state === 'calibrating') {
+    game.cancelSensorSetup('Sensor setup canceled when leaving Games.');
+  }
   mode = next;
   for (const key of Object.keys(tabs)) {
     const on = key === next;
@@ -103,6 +110,9 @@ function renderSensor(state, detail = '') {
 
 sensor.addEventListener('state', (e) => {
   const { state, detail } = e.detail;
+  if (state !== 'live' && game.state === 'calibrating') {
+    game.cancelSensorSetup('Sensor disconnected. Reconnect and start the setup again.');
+  }
   if (state !== 'live' && state !== 'demo') { segmenter.reset(); recenter = null; }
   if (state === 'demo' || state === 'live') instruments.clear();
   if (state === 'connecting') { trace.page = null; trace.offset = null; segmenter.stillGyro = 10; if (calibration) endCalibration(); }
@@ -646,6 +656,11 @@ function refreshGestureStatus() {
 }
 
 function refreshGameStatus() {
+  if (game.state === 'calibrating') {
+    return setStatus('game', 'reading', game.setupPhase === 'still'
+      ? 'Sensor check: hold still for one second.'
+      : 'Sensor check passed. Make one quick, straight practice swipe.');
+  }
   if (game.state === 'running') return setStatus('game', 'ready', 'Slice quickly! Drag across the fruit or make a swipe.');
   if (game.state === 'over') return setStatus('game', 'idle', `Round over. You scored ${game.score}. Play again?`);
   setStatus('game', 'idle', sensor.state === 'live'
@@ -709,7 +724,13 @@ function showGesture(r) {
   list.prepend(item);
   while (list.children.length > 12) list.lastElementChild.remove();
 
-  if (mode === 'games' && game.state === 'running' && r.label.startsWith('swipe_')) {
+  if (mode === 'games' && game.state === 'calibrating') {
+    if (!game.confirmPracticeSwipe(r) && game.setupPhase === 'swipe') {
+      setStatus('game', 'idle', r.label.startsWith('swipe_')
+        ? `Practice ${LABELS[r.label]} detected (${pct(r.confidence)} sure). Try another quick swipe.`
+        : 'Practice swipe not recognized yet. Try one quick, straight swipe.');
+    }
+  } else if (mode === 'games' && game.state === 'running' && r.label.startsWith('swipe_')) {
     const sliced = game.swipe(r.label);
     setStatus('game', sliced ? 'ready' : 'idle', sliced
       ? `${LABELS[r.label]} (${pct(r.confidence)} sure)! Nice slice.`
@@ -751,7 +772,10 @@ sensor.addEventListener('sample', (e) => {
   const s = e.detail;
   instruments.push(s);
   if (mode === 'letters') { if (sensor.state === 'live') onLetterSample(s); }
-  else if (gestures) gestures.push(gestureRow(s));
+  else {
+    if (mode === 'games') game.observeSensorSample(s);
+    if (gestures) gestures.push(gestureRow(s));
+  }
 });
 
 window.addEventListener('load', () => { if (!window.GestureCore) { gestureModel = false; refreshGestureStatus(); } });
