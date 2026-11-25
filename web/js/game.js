@@ -186,25 +186,34 @@ export class FruitGame {
 
   swipe(direction) {
     if (!this.active || this.state !== 'running') return;
+    const visible = this.fruits
+      .filter((fruit) => fruit.y + fruit.radius > 0 && fruit.y - fruit.radius < this.height)
+      .sort((a, b) => Math.abs(a.x - this.width / 2) - Math.abs(b.x - this.width / 2));
+    const fruit = visible[0];
+    if (!fruit) return 0;
+
+    const r = fruit.radius * 1.35;
     const paths = {
-      swipe_up: [0.39, 0.8, 0.62, 0.24],
-      swipe_down: [0.62, 0.24, 0.39, 0.8],
-      swipe_left: [0.82, 0.57, 0.18, 0.42],
-      swipe_right: [0.18, 0.42, 0.82, 0.57],
+      swipe_up: [-0.65, 1.1, 0.65, -1.1],
+      swipe_down: [0.65, -1.1, -0.65, 1.1],
+      swipe_left: [1.1, -0.65, -1.1, 0.65],
+      swipe_right: [-1.1, 0.65, 1.1, -0.65],
     };
     const path = paths[direction];
-    if (!path) return;
-    const points = path.map((value, index) => value * (index % 2 === 0 ? this.width : this.height));
-    this.cut({ x: points[0], y: points[1] }, { x: points[2], y: points[3] });
+    if (!path) return 0;
+    const points = path.map((value, index) => value * r + (index % 2 === 0 ? fruit.x : fruit.y));
+    return this.cut({ x: points[0], y: points[1] }, { x: points[2], y: points[3] });
   }
 
   cut(start, end) {
     const now = performance.now();
     this.slashes.push({ start, end, time: now });
     const remaining = [];
+    let sliced = 0;
     for (const fruit of this.fruits) {
       if (distanceToSegment(fruit, start, end) <= fruit.radius + 9) {
         this.score += 1;
+        sliced += 1;
         this.combo = now - this.lastSlice < 700 ? this.combo + 1 : 1;
         this.lastSlice = now;
         this.burst(fruit);
@@ -215,6 +224,7 @@ export class FruitGame {
     this.fruits = remaining;
     this.updateScoreboard();
     this.render(now);
+    return sliced;
   }
 
   burst(fruit) {

@@ -709,7 +709,14 @@ function showGesture(r) {
   list.prepend(item);
   while (list.children.length > 12) list.lastElementChild.remove();
 
-  if (mode === 'games' && r.kind === 'gesture') game.swipe(r.label);
+  if (mode === 'games' && game.state === 'running' && r.kind === 'gesture') {
+    const sliced = game.swipe(r.label);
+    setStatus('game', sliced ? 'ready' : 'idle', sliced
+      ? `${LABELS[r.label]}! Nice slice.`
+      : 'Swipe recognized. Try again when fruit is in the air.');
+  } else if (mode === 'games' && game.state === 'running' && r.kind === 'unsure') {
+    setStatus('game', 'idle', 'Swipe not recognized. Try a quick, clear movement.');
+  }
 
   clearTimeout(fadeTimer);
   fadeTimer = setTimeout(() => stage.classList.add('faded'), 4000);
